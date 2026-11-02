@@ -261,6 +261,7 @@ func (a *App) resetClient() {
 		a.client = clash.New(a.mgr.Controller(), a.mgr.Secret())
 	} else {
 		a.client = nil
+		a.rateUp, a.rateDown = 0, 0
 	}
 }
 
@@ -275,6 +276,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case trafficTickMsg:
+		// the core may die outside of our control (crash, kill, port conflict);
+		// the tick is a cheap watchdog
+		if a.running && !a.mgr.Running() {
+			a.running = false
+			a.startedAt = time.Time{}
+			a.resetClient()
+			a.status, a.statusErr = "ядро упало — смотри вкладку 3 (логи)", true
+		}
 		if a.client != nil && m.err == nil {
 			prev := a.traffic
 			a.traffic = m.traffic
