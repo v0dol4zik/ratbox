@@ -181,6 +181,12 @@ func (a *App) submitAddSubCmd(raw string) tea.Cmd {
 
 func (a *App) submitAddLinkCmd(raw string) tea.Cmd {
 	return func() tea.Msg {
+		// pasted a subscription url -> treat as subscription
+		low := strings.ToLower(strings.TrimSpace(raw))
+		if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+			cmd := a.submitAddSubCmd(raw)
+			return cmd()
+		}
 		node, err := sub.ParseLink(raw)
 		if err != nil {
 			return opDoneMsg{text: "invalid link", err: err}
@@ -413,7 +419,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(cmds...)
 		case "n":
-			a.beginInput("link: ", func(s string) tea.Cmd { return a.submitAddLinkCmd(s) })
+			a.beginInput("share link or subscription url: ", func(s string) tea.Cmd { return a.submitAddLinkCmd(s) })
 		case "d":
 			if len(a.store.Nodes) == 0 {
 				return a, nil
@@ -438,7 +444,12 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.subIdx++
 			}
 		case "a":
-			a.beginInput("subscription url: ", func(s string) tea.Cmd { return a.submitAddSubCmd(s) })
+			a.beginInput("subscription url or share link: ", func(s string) tea.Cmd {
+				if isHTTPURL(s) {
+					return a.submitAddSubCmd(s)
+				}
+				return a.submitAddLinkCmd(s)
+			})
 		case "u":
 			if len(a.store.Subs) == 0 {
 				return a, nil
@@ -491,6 +502,13 @@ func (a *App) beginInput(prompt string, submit func(string) tea.Cmd) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// isHTTPURL reports whether the input looks like an http(s) subscription url
+// rather than a proxy share link.
+func isHTTPURL(raw string) bool {
+	low := strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://")
+}
 
 func deepCopyNodes(src []*model.Node) []*model.Node {
 	out := make([]*model.Node, len(src))
