@@ -1,0 +1,5 @@
+/bin/
+/ratbox
+/ratbox-debug.log
+*.test
+dist/

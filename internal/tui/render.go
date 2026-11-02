@@ -1,0 +1,228 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+)
+
+func (a *App) View() string {
+	if a.width == 0 {
+		return "loading…"
+	}
+	var b strings.Builder
+
+	b.WriteString(a.renderHeader())
+	b.WriteByte('\n')
+	b.WriteString(a.renderTabs())
+	b.WriteByte('\n')
+	bodyHeight := a.height - 4 // header + tabs + footer + status
+	switch a.view {
+	case ViewNodes:
+		b.WriteString(a.renderNodes(bodyHeight))
+	case ViewSubs:
+		b.WriteString(a.renderSubs(bodyHeight))
+	case ViewLogs:
+		b.WriteString(a.renderLogs(bodyHeight))
+	}
+	b.WriteByte('\n')
+	b.WriteString(a.renderFooter())
+	return b.String()
+}
+
+func (a *App) renderHeader() string {
+	coreState := "stopped"
+	stateStyle := errStyle
+	if a.running {
+		coreState = "running " + humanUptime(a.startedAt)
+		stateStyle = okStyle
+	}
+	active := "—"
+	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
+		active = n.Tag
+	}
+	parts := []string{
+		titleStyle.Render("ratbox"),
+		stateStyle.Render(coreState),
+		dimStyle.Render(fmt.Sprintf("proxy 127.0.0.1:%d", a.store.MixedPort)),
+		"active: " + active,
+	}
+	if a.running {
+		parts = append(parts,
+			dimStyle.Render(fmt.Sprintf("↑ %s/s ↓ %s/s", humanBytes(a.rateUp), humanBytes(a.rateDown))),
+			dimStyle.Render(fmt.Sprintf("tot %s", humanBytes(a.traffic.UploadTotal+a.traffic.DownloadTotal))),
+		)
+	}
+	return headerStyle.Render(strings.Join(parts, " │ "))
+}
+
+func (a *App) renderTabs() string {
+	names := []string{"nodes", "subs", "logs"}
+	var parts []string
+	for i, name := range names {
+		style := dimStyle
+		label := " " + name + " "
+		if a.view == i {
+			style = titleStyle.Copy().Bold(true)
+		}
+		parts = append(parts, style.Render(label))
+	}
+	return strings.Join(parts, "")
+}
+
+func (a *App) renderNodes(height int) string {
+	if len(a.store.Nodes) == 0 {
+		return "\n " + dimStyle.Render("no nodes yet — press 2, then `a` to add a subscription") +
+			"\n " + dimStyle.Render("or press `n` here to paste a share link")
+	}
+	// column widths
+	avail := a.width - 2
+	nameW := avail * 38 / 100
+	protoW := 11
+	addrW := avail * 30 / 100
+	latW := 10
+
+	var lines []string
+	lines = append(lines, " "+
+		dimStyle.Render(padRight("NAME", nameW)+" "+padRight("PROTOCOL", protoW)+" "+
+			padRight("ENDPOINT", addrW)+" "+padRight("LATENCY", latW)))
+
+	visible := height - 1
+	offset := visibleOffset(a.nodeIdx, len(a.store.Nodes), visible)
+	for i := offset; i < len(a.store.Nodes) && len(lines)-1 < visible; i++ {
+		n := a.store.Nodes[i]
+		name := n.Tag
+		if len(a.store.Subs) > 1 && n.SubID != "" {
+			name = a.store.SubName(n.SubID) + "/" + n.Tag
+		}
+		marker := " "
+		style := normalStyle
+		if a.store.ActiveNodeID == n.ID {
+			marker = "*"
+			style = activeStyle
+		}
+		if i == a.nodeIdx {
+			style = selectedStyle
+		}
+		lat := "    —"
+		if ms, ok := a.latency[n.Tag]; ok {
+			if ms < 0 {
+				lat = "    ✗"
+			} else {
+				lat = fmt.Sprintf("%4d ms", ms)
+			}
+		}
+		row := marker + " " +
+			padRight(style.Render(TruncateVisible(name, nameW-2)), nameW) +
+			" " + padRight(n.Type(), protoW) +
+			" " + padRight(n.Addr(), addrW) +
+			" " + latStyle(lat)
+		lines = append(lines, row)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func latStyle(s string) string {
+	switch {
+	case strings.Contains(s, "✗"):
+		return errStyle.Render(s)
+	case s == "    —":
+		return dimStyle.Render(s)
+	default:
+		return okStyle.Render(s)
+	}
+}
+
+func (a *App) renderSubs(height int) string {
+	if len(a.store.Subs) == 0 {
+		return "\n " + dimStyle.Render("no subscriptions — press `a` to add one")
+	}
+	var lines []string
+	for i, s := range a.store.Subs {
+		style := normalStyle
+		marker := " "
+		if i == a.subIdx {
+			style = selectedStyle
+		}
+		count := 0
+		for _, n := range a.store.Nodes {
+			if n.SubID == s.ID {
+				count++
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s %s  %s nodes  %s",
+			marker,
+			style.Render(TruncateVisible(s.Name, 20)),
+			dimStyle.Render(fmt.Sprintf("%d", count)),
+			dimStyle.Render(TruncateVisible(s.URL, a.width-40)),
+		))
+		if len(lines) >= height-1 {
+			break
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) renderLogs(height int) string {
+	lines := a.mgr.Logs()
+	if len(lines) == 0 {
+		return "\n " + dimStyle.Render("logs are empty")
+	}
+	maxOff := maxInt(0, len(lines)-height)
+	off := a.logOffset
+	if off > maxOff {
+		off = maxOff
+	}
+	end := off + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	shown := lines[off:end]
+	for _, l := range shown {
+		if strings.Contains(l, ".INFO") {
+			l = normalStyle.Render(l)
+		} else if strings.Contains(l, "[ratbox]") {
+			l = titleStyle.Render(l)
+		}
+	}
+	return " " + strings.Join(shown, "\n ")
+}
+
+func (a *App) renderFooter() string {
+	if a.inputActive {
+		return fmt.Sprintf("\n %s%s▏",
+			titleStyle.Render(a.inputPrompt), a.inputBuf)
+	}
+	var keys string
+	switch a.view {
+	case ViewNodes:
+		keys = "↑↓ select · Enter set active · t test · T test all · n add link · d remove · s start/stop"
+	case ViewSubs:
+		keys = "↑↓ select · a add sub · u update · d remove · s start/stop"
+	case ViewLogs:
+		keys = "j/k,g/G scroll · s start/stop"
+	}
+	keys += " · 1/2/3 tabs · q quit"
+	var status string
+	if a.status != "" {
+		if a.statusErr {
+			status = errStyle.Render(" ! ") + errStyle.Render(a.status)
+		} else {
+			status = okStyle.Render(" ✓ ") + a.status
+		}
+	}
+	statusLine := "\n" + status
+	return statusLine + "\n" + helpStyle.Render(keys)
+}
+
+func visibleOffset(cursor, total, visible int) int {
+	if total <= visible || visible <= 0 {
+		return 0
+	}
+	if cursor < visible/2 {
+		return 0
+	}
+	if cursor > total-visible/2 {
+		return total - visible
+	}
+	return cursor - visible/2
+}
