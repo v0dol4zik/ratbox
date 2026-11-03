@@ -2,7 +2,9 @@ package process
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -136,7 +138,19 @@ func serveNamespaceProxy(t *testing.T) {
 				return
 			}
 			_, _ = io.WriteString(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
-			if _, err = http.ReadRequest(br); err != nil {
+			request, err := http.ReadRequest(br)
+			if err != nil {
+				return
+			}
+			body, err := io.ReadAll(io.LimitReader(request.Body, 4*1024*1024))
+			request.Body.Close()
+			if err != nil {
+				return
+			}
+			if request.Method == http.MethodPost {
+				// Echo the full body: the client verifies both directions byte for byte.
+				_, _ = fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", len(body))
+				_, _ = c.Write(body)
 				return
 			}
 			_, _ = fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(tunTestPayload), tunTestPayload)
@@ -224,6 +238,33 @@ func testNamespaceClient(t *testing.T) {
 	resp6.Body.Close()
 	if err != nil || string(body6) != tunTestPayload {
 		t.Fatalf("IPv6 payload: %q (%v)", body6, err)
+	}
+	// Small messages alone do not establish that media uploads work. Send
+	// and echo two MiB with non-constant bytes on IPv4 and IPv6 through TUN.
+	payload := make([]byte, 2*1024*1024)
+	for i := range payload {
+		payload[i] = byte((i*31 + i/251) % 256)
+	}
+	for _, destination := range []string{"http://198.19.0.2:18080/upload", "http://[2001:db8::2]:18080/upload"} {
+		before, err := api.Traffic()
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		resp, err := hc.Post(destination, "application/octet-stream", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal("bulk TUN upload:", err)
+		}
+		echo, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(echo, payload) {
+			t.Fatalf("bulk TUN echo: status=%d len=%d hash=%x err=%v", resp.StatusCode, len(echo), sha256.Sum256(echo), err)
+		}
+		after, err := api.Traffic()
+		if err != nil || after.UploadTotal-before.UploadTotal < int64(len(payload)) || after.DownloadTotal-before.DownloadTotal < int64(len(payload)) {
+			t.Fatalf("bulk TUN counters: before=%+v after=%+v err=%v", before, after, err)
+		}
+		t.Logf("bulk TUN %s: uploaded and echoed %d bytes in %v", destination, len(payload), time.Since(started))
 	}
 	stats, err := api.Traffic()
 	t.Logf("TUN traffic: %+v err=%v", stats, err)
