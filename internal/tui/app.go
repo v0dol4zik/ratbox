@@ -463,6 +463,18 @@ func (a *App) runCommand(raw string) tea.Cmd {
 	return nil
 }
 
+// normKey lower-cases a single ASCII letter so hotkeys survive Caps Lock
+// being on: the terminal gives us "S" and the app wants "s". The two keys
+// where case IS the meaning ("g"/"G" — list top/end, and the legacy "T"
+// test-all alias) keep their spelling.
+func normKey(k tea.KeyMsg) string {
+	s := k.String()
+	if len(s) == 1 && s[0] >= 'A' && s[0] <= 'Z' && s != "G" && s != "T" {
+		return strings.ToLower(s)
+	}
+	return s
+}
+
 // bestNodeMsg reports the bootstrap node pick result.
 type bestNodeMsg struct {
 	tag string
@@ -862,7 +874,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	switch k.String() {
+	switch normKey(k) {
 	case "q", "ctrl+c":
 		_ = a.mgr.Stop()
 		return a, tea.Quit
@@ -903,7 +915,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch a.view {
 	case ViewNodes:
-		switch k.String() {
+		switch normKey(k) {
 		case "up", "k":
 			if a.nodeIdx > 0 {
 				a.nodeIdx--
@@ -961,7 +973,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.status = "removed " + n.Tag
 		}
 	case ViewSubs:
-		switch k.String() {
+		switch normKey(k) {
 		case "up", "k":
 			if a.subIdx > 0 {
 				a.subIdx--
@@ -999,7 +1011,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.status = "removed sub " + s.Name
 		}
 	case ViewSettings:
-		switch k.String() {
+		switch normKey(k) {
 		case "up", "k":
 			if a.setIdx > 0 {
 				a.setIdx--
@@ -1016,7 +1028,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ViewLogs:
 		lines := a.mgr.Logs()
 		maxOff := maxInt(0, len(lines)-visibleLogLines(a.height))
-		switch k.String() {
+		switch normKey(k) {
 		case "up", "k":
 			if a.logOffset > 0 {
 				a.logOffset--
