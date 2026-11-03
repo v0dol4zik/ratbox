@@ -120,17 +120,16 @@ func (a *App) startCoreCmd() tea.Cmd {
 				return msg
 			}
 			// first failed attempt with a tun permission problem:
-			// try to fix it via polkit (one-time password dialog) and retry
+			// ask for the sudo password right in the TUI. polkit/pkexec is
+			// deliberately NOT used here: without a GUI agent pkexec builds
+			// a textual prompt в the терминал поверх TUI и клавиши уходят
+			// мимо — a separate /dev/tty reader cannot coexist with bubbletea.
 			if ok && cm.tunPerm && attempt == 0 {
 				bin, binErr := process.ResolveBinaryPath(a.store.CoreBinary)
 				if binErr != nil {
 					bin = "sing-box"
 				}
-				if err := process.SetCapsPKExec(bin); err != nil {
-					// no polkit agent or denied — ask in the TUI instead
-					return needSudoPromptMsg{binary: bin}
-				}
-				continue
+				return needSudoPromptMsg{binary: bin}
 			}
 			return msg
 		}

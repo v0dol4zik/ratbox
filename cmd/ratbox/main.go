@@ -51,7 +51,16 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(tui.New(st, mgr), tea.WithAltScreen())
+	progOpts := []tea.ProgramOption{tea.WithAltScreen()}
+	// headless e2e harness: feed keystrokes through a fifo (the pty is only
+	// used for rendering in that mode, bubbletea there otherwise swallows input)
+	if pipes := os.Getenv("RATBOX_TEST_INPUT"); pipes != "" {
+		if f, err := os.OpenFile(pipes, os.O_RDWR, 0); err == nil {
+			progOpts = append(progOpts, tea.WithInput(f))
+		}
+	}
+
+	p := tea.NewProgram(tui.New(st, mgr), progOpts...)
 	if _, err := p.Run(); err != nil {
 		fatal(fmt.Errorf("tui: %w", err))
 	}

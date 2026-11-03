@@ -375,33 +375,6 @@ func ResolveBinaryPath(cfgPath string) (string, error) {
 	return resolveBinary(cfgPath)
 }
 
-// SetCapsPKExec grants CAP_NET_ADMIN/CAP_NET_RAW to the core binary using
-// polkit. A one-time password dialog appears; no credentials are stored and
-// the core keeps running as the regular user.
-func SetCapsPKExec(binary string) error {
-	pkexec, err := exec.LookPath("pkexec")
-	if err != nil {
-		return fmt.Errorf("pkexec не найден (установи polkit)")
-	}
-	setcap, err := exec.LookPath("setcap")
-	if err != nil {
-		return fmt.Errorf("setcap не найден (установи libcap)")
-	}
-	cmd := exec.Command(pkexec, setcap, "cap_net_admin,cap_net_raw=ep", binary)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		line := strings.TrimSpace(string(out))
-		if line == "" {
-			line = err.Error()
-		}
-		if i := strings.IndexByte(line, '\n'); i > 0 {
-			line = line[:i]
-		}
-		return fmt.Errorf("polkit: %s", line)
-	}
-	return nil
-}
-
 // RunSetCapsSudo grants CAP_NET_ADMIN/CAP_NET_RAW to the core binary with
 // a sudo password supplied by the user. The password goes directly into the
 // sudo stdin pipe, is zeroized afterwards and is never written to disk.
