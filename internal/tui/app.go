@@ -40,8 +40,9 @@ type App struct {
 	subIdx    int
 	logOffset int
 
-	running bool
-	latency map[string]int
+	running  bool
+	starting bool // a Start is in flight; a second s must not kill it
+	latency  map[string]int
 	// sweep bookkeeping for the latency summary status
 	dSem       chan struct{} // caps concurrent delay tests at 5
 	testTotal  int
@@ -532,13 +533,31 @@ func (a *App) serviceProxy() string {
 }
 
 // startOptions assembles the core start request from the store state.
+// With an active subscription picked only its nodes (plus manual ones)
+// feed the tunnel: a subscription works as a separate profile.
 func (a *App) startOptions() process.StartOptions {
 	var activeTag string
 	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
 		activeTag = n.Tag
 	}
+	nodes := a.store.Nodes
+	filtered := false
+	if id := a.store.ActiveSubID; id != "" {
+		if a.store.Sub(id) != nil {
+			var picked []*model.Node
+			for _, n := range a.store.Nodes {
+				if n.SubID == "" || n.SubID == id {
+					picked = append(picked, n)
+				}
+			}
+			nodes, filtered = picked, true
+		}
+	}
+	if !filtered {
+		nodes = deepCopyNodes(a.store.Nodes)
+	}
 	return process.StartOptions{
-		Nodes:          deepCopyNodes(a.store.Nodes),
+		Nodes:          nodes,
 		ActiveTag:      activeTag,
 		Tun:            a.store.TunMode,
 		Auto:           a.store.AutoMode,
@@ -723,6 +742,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the tick is a cheap watchdog
 		if a.running && !a.mgr.Running() {
 			a.running = false
+			a.starting = false
 			a.startedAt = time.Time{}
 			a.resetClient()
 			a.status, a.statusErr = "core died — see the logs tab (3)", true
@@ -784,6 +804,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case coreStateMsg:
+		a.starting = false
 		if m.err != nil {
 			a.status, a.statusErr = "core: "+m.err.Error(), true
 			return a, nil
@@ -884,6 +905,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case capsGrantedMsg:
 		a.status, a.statusErr = "caps granted — starting core…", false
+		a.starting = true
 		return a, a.startCoreCmd()
 
 	case nodeSelectedMsg:
@@ -989,7 +1011,17 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		return a, a.cycleProfile()
 	case "s":
+		if a.starting {
+			a.status, a.statusErr = "core is already starting — wait a moment", true
+			return a, nil
+		}
 		if a.mgr.Running() {
+			if time.Since(a.startedAt) < 3*time.Second {
+				// right after a start people mash s to "make sure" —
+				// that must not instantly undo the start they waited for
+				a.status, a.statusErr = "core just started — press s again to stop", true
+				return a, nil
+			}
 			return a, a.stopCoreCmd()
 		}
 		if len(a.store.Nodes) == 0 {
@@ -997,6 +1029,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.status = "starting core…"
+		a.starting = true
 		return a, a.startCoreCmd()
 	}
 
@@ -1024,6 +1057,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.store.ActiveNodeID = n.ID
 			_ = a.store.Save()
 			a.status = "starting core on " + n.Tag + "…"
+			a.starting = true
 			return a, a.startCoreCmd()
 		case "t":
 			if len(a.store.Nodes) == 0 {
@@ -1091,6 +1125,29 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.subIdx < len(a.store.Subs)-1 {
 				a.subIdx++
 			}
+		case "enter":
+			// a subscription is its own profile: pressing enter pins the
+			// tunnel to this subscription's nodes; enter again unpins
+			if len(a.store.Subs) == 0 {
+				return a, nil
+			}
+			sub := a.store.Subs[a.subIdx]
+			if a.store.ActiveSubID == sub.ID {
+				a.store.ActiveSubID = ""
+				a.status, a.statusErr = "profile: all subscriptions", false
+			} else {
+				a.store.ActiveSubID = sub.ID
+				a.status, a.statusErr = "profile: "+sub.Name, false
+				// the active node may not belong to the new profile
+				if n := a.store.Node(a.store.ActiveNodeID); n != nil && n.SubID != "" && n.SubID != sub.ID {
+					a.store.ActiveNodeID = ""
+				}
+			}
+			if err := a.store.Save(); err != nil {
+				a.status, a.statusErr = "save failed: "+err.Error(), true
+				return a, nil
+			}
+			return a, a.restartCoreCmd()
 		case "a":
 			a.beginInput("subscription url or share link: ", func(s string) tea.Cmd {
 				if isHTTPURL(s) {

@@ -64,6 +64,9 @@ func (a *App) renderHeader() string {
 	if a.store.RoutingProfile == process.ProfileRUBypass {
 		parts = append(parts, warnStyle.Render("RU→direct"))
 	}
+	if a.store.ActiveSubID != "" {
+		parts = append(parts, "profile: "+a.store.SubName(a.store.ActiveSubID))
+	}
 	parts = append(parts, "active: "+active)
 	if a.running {
 		parts = append(parts,
@@ -217,6 +220,10 @@ func (a *App) renderSubs(height int) string {
 		if i == a.subIdx {
 			style = selectedStyle
 		}
+		if a.store.ActiveSubID == s.ID {
+			marker = "*"
+			style = activeStyle
+		}
 		count := 0
 		for _, n := range a.store.Nodes {
 			if n.SubID == s.ID {
@@ -283,7 +290,7 @@ func (a *App) renderFooter() string {
 	case ViewNodes:
 		keys = "↑↓ select · Enter connect · t test · a test all · n add link · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewSubs:
-		keys = "↑↓ select · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
+		keys = "↑↓ select · Enter profile · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewLogs:
 		keys = "j/k,g/G scroll · s start/stop"
 	case ViewSettings:
@@ -311,15 +318,17 @@ func cleanTag(s string) string {
 	return s
 }
 
+// visibleOffset keeps the list pinned to the top until the cursor
+// reaches the bottom edge, then scrolls one line at a time (and pinned to
+// the bottom near the end) — no more center-jumping while browsing.
 func visibleOffset(cursor, total, visible int) int {
 	if total <= visible || visible <= 0 {
 		return 0
 	}
-	if cursor < visible/2 {
+	if cursor < visible-1 {
 		return 0
 	}
-	if cursor > total-visible/2 {
-		return total - visible
-	}
-	return cursor - visible/2
+	// cursor rides the bottom edge; at the list end the offset naturally
+	// reaches total-visible, so no extra clamp branch is needed
+	return cursor - visible + 1
 }

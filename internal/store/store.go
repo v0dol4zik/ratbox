@@ -31,6 +31,9 @@ type Store struct {
 	Subs         []*Subscription `json:"subs"`
 	Nodes        []*model.Node   `json:"nodes"`
 	ActiveNodeID string          `json:"active_node_id"`
+	// ActiveSubID pins the tunnel to one subscription's nodes ("profile");
+	// empty = all nodes from every subscription
+	ActiveSubID string `json:"active_sub_id"`
 
 	mu   sync.Mutex
 	path string

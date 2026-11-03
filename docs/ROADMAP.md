@@ -31,9 +31,21 @@ here in the same commit.
         longer requires the main core (tempActive guard, core-test data
         dir, orphan cleanup by config path)
 
+## v0.6.2 "Start reliability + subscription profiles"
+
+- [x] second 's' while a start is in flight no longer kills the just
+        started core (starting flag + 3s grace period with an explicit
+        "core just started — press s again to stop" status)
+- [x] single-instance flock (ratbox.lock): a second ratbox refuses to
+        start instead of murdering the first one's core
+- [x] pinned list scrolling (top-anchored, one line at a time) — no more
+        one-line drift when browsing nodes
+- [x] subscription-as-profile: Enter on a subscription pins the tunnel to
+        its nodes (header shows the profile, enter again to unpin)
+
 ## v0.7.0 "Order"
 
-- [ ] P2.1 single-instance lock (flock); second ratbox says so, --force
+- [x] P2.1 single-instance lock (flock) — done in v0.6.2
 - [ ] P2.2 duplicate subscription urls -> offer update instead
 - [ ] P2.3 rewrite footer hints (four tabs, arrows, no lying)
 - [ ] P2.4 User-Agent from main.version instead of hardcoded "ratbox/0.1"
