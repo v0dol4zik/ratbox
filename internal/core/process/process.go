@@ -4,6 +4,7 @@
 package process
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -333,4 +334,81 @@ func SetCapsPKExec(binary string) error {
 		return fmt.Errorf("polkit: %s", line)
 	}
 	return nil
+}
+
+// RunSetCapsSudo grants CAP_NET_ADMIN/CAP_NET_RAW to the core binary with
+// a sudo password supplied by the user. The password goes directly into the
+// sudo stdin pipe, is zeroized afterwards and is never written to disk.
+// A valid cached sudo ticket (or NOPASSWD) skips the password entirely.
+func RunSetCapsSudo(binary string, password []byte) error {
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("sudo не найден")
+	}
+	setcap, err := exec.LookPath("setcap")
+	if err != nil {
+		return fmt.Errorf("setcap не найден (установи libcap)")
+	}
+	caps := "cap_net_admin,cap_net_raw=ep"
+	// 1) try without touching the password reader: cached ticket / NOPASSWD
+	if err := exec.Command(sudo, "-n", setcap, caps, binary).Run(); err == nil {
+		for i := range password {
+			password[i] = 0
+		}
+		return nil
+	}
+	// 2) feed the password via stdin (-S), empty prompt (-p)
+	cmd := exec.Command(sudo, "-S", "-p", "", setcap, caps, binary)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_, _ = stdin.Write(append(password, '\n'))
+	_ = stdin.Close()
+	waitErr := cmd.Wait()
+	for i := range password {
+		password[i] = 0 // cleared; copy for -n path above cleared too
+	}
+	password = nil
+	if waitErr != nil {
+		return fmt.Errorf("%s", firstLine(out.String()))
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i > 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// IsAuthError reports whether the sudo failure looks like a rejected password
+// (both english and localized variants) rather than a system problem.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, p := range []string{
+		"incorrect password",
+		"no password was provided",
+		"try again",
+		"попробуйте ещё раз",
+		"authentication failure",
+		"а также не в файле sudoers",
+		"is not in the sudoers file",
+	} {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
 }

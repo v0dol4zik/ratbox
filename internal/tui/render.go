@@ -192,8 +192,12 @@ func (a *App) renderLogs(height int) string {
 
 func (a *App) renderFooter() string {
 	if a.inputActive {
+		shown := a.inputBuf
+		if a.inputMasked {
+			shown = strings.Repeat("*", len([]rune(a.inputBuf)))
+		}
 		return fmt.Sprintf("\n %s%s▏",
-			titleStyle.Render(a.inputPrompt), a.inputBuf)
+			titleStyle.Render(a.inputPrompt), shown)
 	}
 	var keys string
 	switch a.view {

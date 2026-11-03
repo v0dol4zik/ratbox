@@ -48,7 +48,11 @@ type App struct {
 	inputActive bool
 	inputPrompt string
 	inputBuf    string
+	inputMasked bool // hide characters (sudo password)
 	inputSubmit func(string) tea.Cmd
+
+	sudoAttempts int
+	sudoBin      string
 }
 
 func New(st *store.Store, mgr *process.Manager) *App {
@@ -78,6 +82,11 @@ type opDoneMsg struct {
 	text  string
 	err   error
 	relog bool // refresh logs view
+}
+
+// needSudoPromptMsg asks the user for the sudo password inside the TUI.
+type needSudoPromptMsg struct {
+	binary string
 }
 
 type coreStateMsg struct {
@@ -115,9 +124,8 @@ func (a *App) startCoreCmd() tea.Cmd {
 					bin = "sing-box"
 				}
 				if err := process.SetCapsPKExec(bin); err != nil {
-					cm.tunPerm = false
-					cm.err = fmt.Errorf("tun: %w\nвручную: sudo setcap 'cap_net_admin,cap_net_raw=ep' %s", err, bin)
-					return cm
+					// no polkit agent or denied — ask in the TUI instead
+					return needSudoPromptMsg{binary: bin}
 				}
 				continue
 			}
@@ -341,6 +349,26 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case needSudoPromptMsg:
+		if a.sudoAttempts >= 3 {
+			a.status, a.statusErr = "выполни вручную: sudo setcap 'cap_net_admin,cap_net_raw=ep' "+m.binary, true
+			return a, nil
+		}
+		a.sudoBin = m.binary
+		a.sudoAttempts++
+		bin := m.binary
+		if bin == "" {
+			if b, err := process.ResolveBinaryPath(a.store.CoreBinary); err == nil {
+				bin = b
+			} else {
+				bin = "<sing-box>"
+			}
+		}
+		a.beginPasswordInput("sudo пароль (setcap, Esc — отмена): ", func(pw string) tea.Cmd {
+			return a.sudoSetcapCmd(pw, bin)
+		})
+		return a, nil
+
 	case coreStateMsg:
 		if m.err != nil {
 			a.status, a.statusErr = "core: "+m.err.Error(), true
@@ -348,6 +376,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.running = m.running
 		a.resetClient()
+		if m.running {
+			a.sudoAttempts = 0
+		}
 		if m.running {
 			a.startedAt = time.Now()
 			a.status, a.statusErr = "core started", false
@@ -357,6 +388,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case opDoneMsg:
+		if m.err != nil && process.IsAuthError(m.err) {
+			if a.sudoAttempts < 3 {
+				a.sudoAttempts++
+				a.status, a.statusErr = "неверный пароль, попробуй ещё раз", true
+				a.beginPasswordInput("sudo пароль (setcap, Esc — отмена): ", func(pw string) tea.Cmd {
+					return a.sudoSetcapCmd(pw, a.sudoBin)
+				})
+				return a, nil
+			}
+			a.status, a.statusErr = "выполни вручную: sudo setcap 'cap_net_admin,cap_net_raw=ep' "+a.sudoBin, true
+			return a, nil
+		}
 		if m.err != nil {
 			a.status, a.statusErr = m.text+": "+m.err.Error(), true
 		} else if m.text != "" {
@@ -376,6 +419,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			raw := a.inputBuf
 			a.inputActive = false
+			a.inputBuf = "" // drop the secret from memory asap
 			cmd := a.inputSubmit(raw)
 			a.inputSubmit = nil
 			return a, cmd
@@ -555,10 +599,35 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) beginInput(prompt string, submit func(string) tea.Cmd) {
+	a.inputMasked = false
 	a.inputActive = true
 	a.inputPrompt = prompt
 	a.inputBuf = ""
 	a.inputSubmit = submit
+}
+
+// beginPasswordInput starts a hidden input used for sudo credentials.
+func (a *App) beginPasswordInput(prompt string, submit func(string) tea.Cmd) {
+	a.beginInput(prompt, submit)
+	a.inputMasked = true
+}
+
+// sudoSetcapCmd grants caps via sudo using the entered password and
+// restarts the core on success. The password lives only in memory:
+// cleared on submit, zeroized in RunSetCapsSudo, never stored anywhere.
+func (a *App) sudoSetcapCmd(pw, bin string) tea.Cmd {
+	return func() tea.Msg {
+		err := process.RunSetCapsSudo(bin, []byte(pw))
+		if err != nil {
+			msg := err.Error()
+			if strings.Contains(msg, "incorrect password") || strings.Contains(msg, "no password was provided") {
+				return opDoneMsg{text: "неверный пароль sudo", err: err}
+			}
+			return opDoneMsg{text: "setcap", err: err}
+		}
+		next := a.startCoreCmd()
+		return next()
+	}
 }
 
 // ---------------------------------------------------------------------------
