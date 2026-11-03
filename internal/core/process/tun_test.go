@@ -16,8 +16,8 @@ func TestTUNConflict(t *testing.T) {
 		conflict           bool
 	}{
 		{"wlan0", "", "up", false},
-		{"throne-tun", "0x1001", "unknown", true},
-		{"tun0", "0x1001", "up", true},
+		{"throne-tun", "0x1001", "unknown", false},
+		{"tun0", "0x1001", "up", false},
 		{TunName, "0x1001", "unknown", true},
 		{"tap0", "0x1002", "unknown", false},
 		{"tun0", "0x1001", "down", false},
@@ -46,7 +46,7 @@ func TestTUNConflict(t *testing.T) {
 	}
 }
 
-// Exercises the real preflight only when the host already has a TUN.
+// Exercises the real preflight only when ratbox's own interface exists.
 // Start must reject before creating a config or starting any process.
 func TestHostTUNConflictPreventsStart(t *testing.T) {
 	conflict := checkTUNConflicts("/sys/class/net")
@@ -70,6 +70,20 @@ func TestHostTUNConflictPreventsStart(t *testing.T) {
 		t.Fatal("preflight touched config directory")
 	}
 	t.Log(conflict)
+}
+
+func TestTUNRouteDiagnostic(t *testing.T) {
+	for _, tt := range []struct{ data, want string }{
+		{`[{"dev":"ratbox0"}]`, "via ratbox0"},
+		{`[{"dev":"throne-tun"}]`, "warning: 1.1.1.1 uses throne-tun"},
+		{`[{"dev":"wlan0"}]`, "warning: 1.1.1.1 uses wlan0"},
+		{`[]`, "invalid"},
+		{`bad-json`, "invalid"},
+	} {
+		if got := tunRouteDiagnostic([]byte(tt.data)); !strings.Contains(got, tt.want) {
+			t.Errorf("diagnostic(%s) = %s, want %s", tt.data, got, tt.want)
+		}
+	}
 }
 
 func TestTUNConfigIsolation(t *testing.T) {

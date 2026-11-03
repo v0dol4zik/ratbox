@@ -43,7 +43,30 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.7 "Remove false TUN blocking; prove the data path"
+
+- [x] remove blanket refusal when any TUN exists: persistent/disconnected
+        interfaces are not proof of a routing conflict; reserve only ratbox0
+- [x] log the kernel route to 1.1.1.1 after startup and show a warning if
+        another interface wins; do not call a route lookup a connectivity test
+- [x] surface selector failures instead of silently reporting core started
+- [x] recover only exact-config-path orphan cores with SIGINT first, allowing
+        route cleanup; SIGKILL remains a fallback with process identity recheck
+- [x] serialize Manager Start/Stop and make Stop safe to call after exit
+- [x] isolated Linux user/network namespace regression with a fake HTTP proxy:
+        IPv4 and IPv6 payloads must traverse TUN; Clash counters must increase;
+        disconnected throne-tun must not block startup; clean stop removes
+        interface/rules, destination fails without TUN, restart works
+- [x] bounded test subprocess cleanup; no host routing changes in default tests
+- [x] opt-in host diagnostic test checks this core's counters, not just HTTP
+        success (another VPN can intercept packets after kernel route lookup)
+- [ ] real host/browser validation without another client's packet interception
+
 ## v0.6.6 "TUN route conflicts, not imaginary counters"
+
+**Correction (v0.6.7):** checking for any existing TUN was too broad and
+blocked disconnected persistent interfaces. Only ratbox's own interface is
+reserved now; other route ownership is diagnosed, not prohibited.
 
 - [x] found concurrent Throne TUN and ratbox using table 2022 and the same
         addresses; `ip route get` selected throne-tun, invalidating earlier

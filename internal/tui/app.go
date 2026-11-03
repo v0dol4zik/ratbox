@@ -218,12 +218,25 @@ func (a *App) tryStartCore(opts process.StartOptions, tun bool) tea.Msg {
 		detail := a.lastCoreErr()
 		return coreStateMsg{false, "", fmt.Errorf("clash api not responding%s", detail), false}
 	}
+	var selectErr error
 	if opts.Auto {
-		_ = c.Select(process.SelectorTag, process.AutoTag)
+		selectErr = c.Select(process.SelectorTag, process.AutoTag)
 	} else if opts.ActiveTag != "" {
-		_ = c.Select(process.SelectorTag, opts.ActiveTag)
+		selectErr = c.Select(process.SelectorTag, opts.ActiveTag)
 	}
-	return coreStateMsg{true, "", nil, false}
+	if selectErr != nil {
+		_ = a.mgr.Stop()
+		return coreStateMsg{false, "", fmt.Errorf("select node: %w", selectErr), false}
+	}
+	text := ""
+	if tun {
+		diagnostic := a.mgr.TUNRouteDiagnostic()
+		a.mgr.LogDiagnostic(diagnostic)
+		if strings.Contains(diagnostic, "warning") {
+			text = diagnostic
+		}
+	}
+	return coreStateMsg{true, text, nil, false}
 }
 
 // toggleTun flips the tun mode (restarts the core when running).
@@ -848,6 +861,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sudoAttempts = 0
 			a.startedAt = time.Now()
 			a.status, a.statusErr = "core started", false
+			if m.text != "" {
+				a.status, a.statusErr = m.text, true
+			}
 			cmds := []tea.Cmd{trafficTickCmd(a)}
 			// no node selected and no auto mode: the selector would fall
 			// back to the first (often dead) node — under tun that kills

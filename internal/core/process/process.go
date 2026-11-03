@@ -37,6 +37,7 @@ type Config struct {
 }
 
 type Manager struct {
+	lifecycleMu   sync.Mutex // serialize start/stop without blocking the waiter on mu
 	mu            sync.Mutex
 	cfg           Config
 	cmd           *exec.Cmd
@@ -156,6 +157,8 @@ type StartOptions struct {
 }
 
 func (m *Manager) Start(opts StartOptions) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.isRunning() {
@@ -169,13 +172,14 @@ func (m *Manager) Start(opts StartOptions) error {
 	if err != nil {
 		return fmt.Errorf("controller: %w", err)
 	}
-	// Check before touching any existing process or routing state.
+	// Reap only cores matching our exact config path before checking our own
+	// interface; otherwise a recoverable orphan would block every new start.
+	killOrphanCores(m.cfg.DataDir, m.cfg.MixedPort)
 	if opts.Tun {
 		if err := checkTUNConflicts("/sys/class/net"); err != nil {
 			return err
 		}
 	}
-	killOrphanCores(m.cfg.DataDir, m.cfg.MixedPort)
 
 	if opts.ServicePort == 0 {
 		servicePort, err := freeLocalPort()
@@ -233,14 +237,25 @@ func (m *Manager) Start(opts StartOptions) error {
 
 // Stop terminates the core process (SIGINT, then SIGKILL after 5s).
 func (m *Manager) Stop() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	cmd, done := m.cmd, m.waitDone
 	m.mu.Unlock()
 	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
+	select {
+	case <-done:
+		return nil // already reaped; do not signal a potentially recycled PID
+	default:
+	}
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
-		return fmt.Errorf("kill: %w", err)
+		if err != syscall.ESRCH {
+			return fmt.Errorf("kill: %w", err)
+		}
+		<-done // process exited between the check and signal; let Wait reap it
+		return nil
 	}
 	select {
 	case <-done:
@@ -493,7 +508,20 @@ func killOrphanCores(dataDir string, mixedPort int) {
 		if !ours {
 			continue
 		}
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		// Give sing-box time to remove its TUN rules instead of leaving
+		// stale routing state after every orphan recovery.
+		_ = syscall.Kill(pid, syscall.SIGINT)
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			if err := syscall.Kill(pid, 0); err != nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		// Re-check identity before a force kill: the original PID may have
+		// exited and been recycled while waiting.
+		if current, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline")); err == nil && bytes.Equal(current, raw) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 	}
 	// wait for the mixed port to actually become free (SO_REUSE-less cores)
 	if mixedPort <= 0 {
