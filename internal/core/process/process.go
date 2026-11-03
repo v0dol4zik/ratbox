@@ -148,13 +148,14 @@ const ServiceTag = "service-in"
 
 // StartOptions describe the runtime layout selected in the TUI.
 type StartOptions struct {
-	Nodes          []*model.Node
-	ActiveTag      string
-	Tun            bool
-	TunStack       string // empty uses gvisor; explicit override for diagnostics
-	Auto           bool   // urltest group is the selector default
-	RoutingProfile int    // ProfileGlobal | ProfileRUBypass
-	ServicePort    int    // loopback port of the always-direct service inbound
+	Nodes           []*model.Node
+	ActiveTag       string
+	Tun             bool
+	TunStack        string // empty uses gvisor; explicit override for diagnostics
+	TunAutoRedirect bool   // diagnostic opt-in; owns the core's shared nftables table
+	Auto            bool   // urltest group is the selector default
+	RoutingProfile  int    // ProfileGlobal | ProfileRUBypass
+	ServicePort     int    // loopback port of the always-direct service inbound
 }
 
 func (m *Manager) Start(opts StartOptions) error {
@@ -416,6 +417,9 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 			stack = "gvisor"
 		}
 		inbounds[0]["stack"] = stack
+		if opts.TunAutoRedirect {
+			inbounds[0]["auto_redirect"] = true
+		}
 		// DNS must be handled before the private-IP bypass (e.g. LAN DNS).
 		rules = append(rules, map[string]any{"protocol": "dns", "action": "hijack-dns"})
 		// dns through the tunnel to protect from poisoning;

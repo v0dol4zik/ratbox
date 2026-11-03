@@ -115,6 +115,25 @@ func TestTUNStackDefaultAndOverride(t *testing.T) {
 	}
 }
 
+func TestTUNAutoRedirectOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		cfg, err := BuildConfig(StartOptions{Tun: true, TunAutoRedirect: enabled, TunStack: "system", Nodes: []*model.Node{{Tag: "test", Outbound: json.RawMessage(`{"type":"http","server":"127.0.0.1","server_port":18081}`)}}}, 2080, "127.0.0.1:9091", "secret", t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Inbounds []map[string]any `json:"inbounds"`
+		}
+		if err := json.Unmarshal(cfg, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		value, present := decoded.Inbounds[0]["auto_redirect"]
+		if present != enabled || (enabled && value != true) {
+			t.Fatalf("redirect opt-in %v: %+v", enabled, decoded.Inbounds[0])
+		}
+	}
+}
+
 // TestBuildConfigTUN validates the tun-mode config against the real binary.
 func TestBuildConfigTUN(t *testing.T) {
 	bin := sbPath(t)

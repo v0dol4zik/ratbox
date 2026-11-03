@@ -43,6 +43,20 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## Linux TUN upstream research (after v0.6.10)
+
+- [x] inspect official sing-box guidance, versioned Throne 1.2.4 generator and
+        sing-tun implementation; findings and links in [TUN_RESEARCH.md](TUN_RESEARCH.md)
+- [x] test upstream system + auto_redirect with INPUT DROP, IPv4/IPv6 bulk
+        uploads and cleanup/restart in private namespaces
+- [x] compare gvisor vs system+redirect with a netem 20 Mbit/s, ~50 ms RTT
+        uplink; both pass, observed ~2.15 s for 2 MiB POST+echo. This does not
+        reproduce or explain the live Telegram upload failure
+- [x] keep auto_redirect opt-in for tests only: sing-box 1.14's shared nft table
+        cleanup could disrupt another running core. No live host rules changed
+- [ ] same-node Telegram TUN vs built-in SOCKS comparison and complete errors
+        during failed media transfer; do not claim an untested performance fix
+
 ## Post-v0.6.10: media-upload investigation
 
 - [x] user confirmed Telegram messages work through TUN after the stack fix;

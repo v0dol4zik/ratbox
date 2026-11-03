@@ -36,7 +36,7 @@ func TestTUNNamespace(t *testing.T) {
 		testNamespaceClient(t)
 		return
 	}
-	for _, tool := range []string{"unshare", "nsenter", "ip", "sh", "mount", "nft"} {
+	for _, tool := range []string{"unshare", "nsenter", "ip", "sh", "mount", "nft", "tc"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " not installed")
 		}
@@ -56,6 +56,9 @@ func TestTUNNamespace(t *testing.T) {
 		{"default", "", ""},
 		{"input_drop_mixed_stack", "mixed", "1"},
 		{"input_drop_ratbox_default", "", "1"},
+		{"input_drop_redirect_system", "redirect-system", "1"},
+		{"wan_gvisor", "", "wan"},
+		{"wan_redirect_system", "redirect-system", "wan"},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runTUNNamespace(t, self, bin, tc.stack, tc.firewall) })
 	}
@@ -82,6 +85,10 @@ ip route add default via 198.18.0.2 dev rb-up
 nsenter -t "$peer" -n ip link set lo up
 nsenter -t "$peer" -n ip addr add 198.18.0.2/24 dev rb-peer
 nsenter -t "$peer" -n ip link set rb-peer up
+if [ "$RATBOX_NETNS_FIREWALL" = wan ]; then
+ tc qdisc add dev rb-up root netem delay 25ms rate 20mbit
+ nsenter -t "$peer" -n tc qdisc add dev rb-peer root netem delay 25ms rate 20mbit
+fi
 RATBOX_NETNS_MODE=proxy nsenter -t "$peer" -n "$SELF" -test.run '^TestTUNNamespace$' -test.v & proxy=$!
 for i in $(seq 1 50); do [ ! -f "$READY" ] || break; sleep 0.1; done
 [ -f "$READY" ]
@@ -164,6 +171,9 @@ func testNamespaceClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := StartOptions{Tun: true, TunStack: os.Getenv("RATBOX_NETNS_STACK"), ActiveTag: "fake-proxy", Nodes: []*model.Node{{Tag: "fake-proxy", Outbound: json.RawMessage(`{"type":"http","server":"198.18.0.2","server_port":18081}`)}}}
+	if opts.TunStack == "redirect-system" {
+		opts.TunStack, opts.TunAutoRedirect = "system", true
+	}
 	if err := mgr.Start(opts); err != nil {
 		t.Fatal(err)
 	}
@@ -187,13 +197,13 @@ func testNamespaceClient(t *testing.T) {
 	}
 	out, err := exec.Command("ip", "route", "get", "198.19.0.2").CombinedOutput()
 	t.Logf("route: %s", out)
-	if err != nil || !strings.Contains(string(out), "dev "+TunName) {
+	if err != nil || (!opts.TunAutoRedirect && !strings.Contains(string(out), "dev "+TunName)) {
 		t.Fatalf("wrong route: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join("/sys/class/net", TunName)); err != nil {
 		t.Fatal("TUN is missing from namespace sysfs:", err)
 	}
-	if diagnostic := mgr.TUNRouteDiagnostic(); !strings.Contains(diagnostic, "via "+TunName) {
+	if diagnostic := mgr.TUNRouteDiagnostic(); !opts.TunAutoRedirect && !strings.Contains(diagnostic, "via "+TunName) {
 		t.Fatal(diagnostic)
 	}
 	if os.Getenv("RATBOX_NETNS_FIREWALL") != "" && opts.TunStack == "mixed" {
@@ -273,6 +283,12 @@ func testNamespaceClient(t *testing.T) {
 	}
 	if err := mgr.Stop(); err != nil {
 		t.Fatal(err)
+	}
+	if opts.TunAutoRedirect {
+		out, err := exec.Command("nft", "list", "tables").CombinedOutput()
+		if err != nil || strings.Contains(string(out), "table inet sing-box") {
+			t.Fatalf("redirect nft table remains after stop: %s (%v)", out, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join("/sys/class/net", TunName)); !os.IsNotExist(err) {
 		t.Fatal("TUN interface remains after clean stop")
