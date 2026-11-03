@@ -290,7 +290,7 @@ func (a *App) renderFooter() string {
 	case ViewNodes:
 		keys = "↑↓ select · Enter connect · t test · a test all · n add link · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewSubs:
-		keys = "↑↓ select · Enter profile · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
+		keys = "Enter profile · u update · c clear · r rename · a add · d delete · m tun · y auto · p profile · s start/stop"
 	case ViewLogs:
 		keys = "j/k,g/G scroll · s start/stop"
 	case ViewSettings:

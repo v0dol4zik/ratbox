@@ -712,8 +712,28 @@ func (a *App) restartCoreCmd() tea.Cmd {
 	if !a.mgr.Running() {
 		return nil
 	}
+	// nothing left to route through? stop cleanly instead of feeding the
+	// core an empty node set (it refuses to start at all)
+	if a.tunnelNodeCount() == 0 {
+		a.status, a.statusErr = "no nodes left in the profile — core stopped; press u to re-import or a to add", true
+		return a.stopCoreCmd()
+	}
 	a.syncManagerConfig()
 	return a.startCoreCmd()
+}
+
+// tunnelNodeCount counts nodes the running profile would use.
+func (a *App) tunnelNodeCount() int {
+	if id := a.store.ActiveSubID; id != "" {
+		n := 0
+		for _, node := range a.store.Nodes {
+			if node.SubID == "" || node.SubID == id {
+				n++
+			}
+		}
+		return n
+	}
+	return len(a.store.Nodes)
 }
 
 func (a *App) resetClient() {
@@ -1107,7 +1127,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			n := a.store.Nodes[a.nodeIdx]
 			a.store.RemoveNode(n.ID)
-			delete(a.latency, n.Tag)
+			a.pruneLatency()
 			_ = a.store.Save()
 			if a.nodeIdx >= len(a.store.Nodes) && a.nodeIdx > 0 {
 				a.nodeIdx--
@@ -1160,12 +1180,49 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			return a, a.updateSubCmd()
+		case "c":
+			// clear the profile: drop its nodes, keep the subscription
+			// itself — press u later to re-import them from the url
+			if len(a.store.Subs) == 0 {
+				return a, nil
+			}
+			sub := a.store.Subs[a.subIdx]
+			a.store.ClearSubscription(sub.ID)
+			if a.store.ActiveSubID == sub.ID {
+				a.store.ActiveSubID = ""
+			}
+			a.nodeIdx = 0
+			a.pruneLatency()
+			if err := a.store.Save(); err != nil {
+				a.status, a.statusErr = "save failed: "+err.Error(), true
+				return a, nil
+			}
+			a.status, a.statusErr = "cleared "+sub.Name+" — press u to re-import", false
+			return a, a.restartCoreCmd()
+		case "r":
+			// rename the subscription (display name only)
+			if len(a.store.Subs) == 0 {
+				return a, nil
+			}
+			sub := a.store.Subs[a.subIdx]
+			a.beginInput("new name ["+sub.Name+"]: ", func(newName string) tea.Cmd {
+				newName = strings.TrimSpace(newName)
+				if newName == "" || newName == sub.Name {
+					return func() tea.Msg { return opDoneMsg{text: sub.Name + " unchanged"} }
+				}
+				a.store.RenameSubscription(sub.ID, newName)
+				if err := a.store.Save(); err != nil {
+					return func() tea.Msg { return opDoneMsg{text: "save failed", err: err} }
+				}
+				return func() tea.Msg { return opDoneMsg{text: "renamed to " + newName} }
+			})
 		case "d":
 			if len(a.store.Subs) == 0 {
 				return a, nil
 			}
 			s := a.store.Subs[a.subIdx]
 			a.store.RemoveSubscription(s.ID)
+			a.pruneLatency()
 			_ = a.store.Save()
 			if a.subIdx >= len(a.store.Subs) && a.subIdx > 0 {
 				a.subIdx--
@@ -1263,6 +1320,19 @@ func uniquifyTags(st *store.Store, nodes []*model.Node) []*model.Node {
 		n.Tag = st.UniqueTag(n.Tag)
 	}
 	return nodes
+}
+
+// pruneLatency drops stale delay entries for nodes that no longer exist.
+func (a *App) pruneLatency() {
+	alive := make(map[string]bool, len(a.store.Nodes))
+	for _, n := range a.store.Nodes {
+		alive[n.Tag] = true
+	}
+	for tag := range a.latency {
+		if !alive[tag] {
+			delete(a.latency, tag)
+		}
+	}
 }
 
 func parseSubInput(raw string) (name, subURL string) {

@@ -139,6 +139,27 @@ func ReplaceSubNodes(s *Store, sub *Subscription, nodes []*model.Node) {
 	}
 }
 
+// ClearSubscription removes all nodes of the subscription but keeps the
+// subscription itself (its url), so a later update re-imports them.
+func (s *Store) ClearSubscription(id string) {
+	var nodes []*model.Node
+	for _, n := range s.Nodes {
+		if n.SubID != id {
+			nodes = append(nodes, n)
+		} else if n.ID == s.ActiveNodeID {
+			s.ActiveNodeID = ""
+		}
+	}
+	s.Nodes = nodes
+}
+
+// RenameSubscription renames a subscription (display only).
+func (s *Store) RenameSubscription(id, name string) {
+	if sub := s.Sub(id); sub != nil {
+		sub.Name = name
+	}
+}
+
 // RemoveSubscription deletes a subscription and its nodes.
 func (s *Store) RemoveSubscription(id string) {
 	var subs []*Subscription

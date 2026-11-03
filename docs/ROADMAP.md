@@ -43,6 +43,18 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.3 "Profile management + the first caught race"
+
+- [x] profile management keys in the subs tab: c clears the profile's
+        nodes (subscription stays, u re-imports), r renames it
+- [x] the -race build caught a real one: two concurrent cmd.Wait() calls
+        (Start's waiter goroutine vs Stop's timeout waiter) race on
+        ProcessState — fixed with single-waiter semantics (waitDone
+        channel), Stop waits the channel instead of calling Wait
+- [x] clearing the last nodes no longer tries to restart the core with an
+        empty node set; the core stops cleanly with an explanatory status
+- [x] latency map pruned when nodes/subscriptions are removed (P2.7)
+
 ## v0.7.0 "Order"
 
 - [x] P2.1 single-instance lock (flock) — done in v0.6.2
@@ -51,7 +63,7 @@ here in the same commit.
 - [ ] P2.4 User-Agent from main.version instead of hardcoded "ratbox/0.1"
 - [ ] P2.5 unify log height calc (G misses one line)
 - [x] P2.6 (obsolete with the `:` removal) — case ":" without return
-- [ ] P2.7 clean latency map of removed nodes
+- [x] P2.7 clean latency map of removed nodes — done in v0.6.3
 - [ ] P2.8 dead code: NodesOfSub, Manager.String, fake retry loop in startCoreCmd
 - [ ] unit tests: normKey, padRight, killOrphanCores, ReplaceSubNodes
 - [ ] move the e2e harness from /tmp into e2e/ in the repo

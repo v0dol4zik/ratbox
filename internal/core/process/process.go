@@ -36,6 +36,7 @@ type Manager struct {
 	mu            sync.Mutex
 	cfg           Config
 	cmd           *exec.Cmd
+	waitDone      chan struct{} // closed once by the single Wait() owner
 	logs          []string
 	started       bool
 	startedAtUnix int64
@@ -199,6 +200,11 @@ func (m *Manager) Start(opts StartOptions) error {
 	m.startedAtUnix = nowUnix()
 
 	go drainLogs(stderr, m)
+	// exactly one goroutine must call cmd.Wait(): two concurrent Wait()
+	// calls race on ProcessState (the -race build aborted the process on
+	// the first stop). Everyone else waits on waitDone instead.
+	waitDone := make(chan struct{})
+	m.waitDone = waitDone
 	go func() {
 		_ = cmd.Wait()
 		m.mu.Lock()
@@ -207,6 +213,7 @@ func (m *Manager) Start(opts StartOptions) error {
 			m.log("[ratbox] core exited")
 		}
 		m.mu.Unlock()
+		close(waitDone)
 	}()
 	return nil
 }
@@ -214,16 +221,14 @@ func (m *Manager) Start(opts StartOptions) error {
 // Stop terminates the core process (SIGINT, then SIGKILL after 5s).
 func (m *Manager) Stop() error {
 	m.mu.Lock()
-	cmd := m.cmd
+	cmd, done := m.cmd, m.waitDone
 	m.mu.Unlock()
-	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
+	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
 		return fmt.Errorf("kill: %w", err)
 	}
-	done := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(done) }()
 	select {
 	case <-done:
 		m.mu.Lock()
@@ -233,11 +238,11 @@ func (m *Manager) Stop() error {
 		return nil
 	case <-after5s():
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
 		m.mu.Lock()
 		m.log("[ratbox] core killed")
 		m.started = false
 		m.mu.Unlock()
-		<-done
 		return nil
 	}
 }
