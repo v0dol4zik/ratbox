@@ -43,6 +43,21 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.9 "Do not confuse probe dial timeout with TUN failure"
+
+- [x] poll exact probe connection concurrently with dialing, not after a
+        successful TCP handshake; node/stack delays no longer prevent observing
+        ingress. A dial timeout with no observation is explicitly inconclusive
+- [x] regression: ingress visible before dial completes; unrelated mixed
+        connections and different source ports must not match
+- [x] opt-in host diagnostic accepts explicit stack/node overrides without
+        saving the store; gvisor did not cure the observed IPv4 bypass
+- [x] host logs also showed reality verification failed for the currently
+        selected VLESS node; this is separate from ingress timeout. A known
+        Shadowsocks node answered through mixed; system requests bypassed it
+- [ ] actual host TUN remains unresolved; test with competing interception
+        disabled by the user and capture the failing running core's logs
+
 ## v0.6.8 "Detect traffic interception, not just routing-table ownership"
 
 - [x] host comparison: same endpoint via ratbox mixed used the selected Poland

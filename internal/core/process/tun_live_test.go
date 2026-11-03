@@ -29,10 +29,23 @@ func TestLiveTUN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := StartOptions{Tun: true, Nodes: st.Nodes}
+	opts := StartOptions{Tun: true, Nodes: st.Nodes, TunStack: os.Getenv("RATBOX_TUN_STACK")}
 	if n := st.Node(st.ActiveNodeID); n != nil {
 		opts.ActiveTag = n.Tag
 	}
+	if tag := os.Getenv("RATBOX_TEST_NODE"); tag != "" {
+		found := false
+		for _, n := range st.Nodes {
+			if n.Tag == tag {
+				opts.ActiveTag, found = tag, true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("RATBOX_TEST_NODE not found")
+		}
+	}
+	t.Logf("testing node %q, stack %q (store is read-only)", opts.ActiveTag, opts.TunStack)
 	if st.ActiveSubID != "" {
 		opts.Nodes = nil
 		for _, n := range st.Nodes {
