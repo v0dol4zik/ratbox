@@ -163,7 +163,8 @@ func (a *App) tryStartCore() tea.Msg {
 		if a.store.TunMode && a.coreDiedOnPerm() {
 			return coreStateMsg{false, "", errors.New("недостаточно прав для tun (CAP_NET_ADMIN)"), true}
 		}
-		return coreStateMsg{false, "", errors.New("clash api not responding, смотри логи (3)"), false}
+		detail := a.lastCoreErr()
+		return coreStateMsg{false, "", fmt.Errorf("clash api not responding%s", detail), false}
 	}
 	if opts.Auto {
 		_ = c.Select(process.SelectorTag, process.AutoTag)
@@ -186,6 +187,21 @@ func (a *App) startOptions() process.StartOptions {
 		Auto:           a.store.AutoMode,
 		RoutingProfile: a.store.RoutingProfile,
 	}
+}
+
+// lastCoreErr extracts the last FATAL/ERROR line from the core logs, if any.
+func (a *App) lastCoreErr() string {
+	for i := len(a.mgr.Logs()) - 1; i >= 0; i-- {
+		l := a.mgr.Logs()[i]
+		if strings.Contains(l, "FATAL") || strings.Contains(l, "ERROR") {
+			// cut ansi/log prefixes: keep the tail after "FATAL]"
+			if j := strings.LastIndex(l, "] "); j >= 0 {
+				l = l[j+2:]
+			}
+			return ": " + strings.TrimSpace(l)
+		}
+	}
+	return ", смотри логи (3)"
 }
 
 // coreDiedOnPerm reports whether the core died because of missing capabilities.

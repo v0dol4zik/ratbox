@@ -268,7 +268,6 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 	// keep "direct" selectable so the user can bypass everything;
 	// with auto mode the urltest group is selectable as well
 	selOut := append([]string{}, tags...)
-	selOut = append(selOut, "direct")
 	if opts.Auto {
 		selOut = append([]string{AutoTag}, selOut...)
 		outbounds = append(outbounds, map[string]any{
@@ -279,7 +278,9 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 			"interval":  "5m",
 		})
 	}
+	selOut = append(selOut, "direct")
 	selector["outbounds"] = selOut
+	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
 
 	// inbounds: tun first (if enabled) + loopback mixed for local tests
 	inbounds := []map[string]any{

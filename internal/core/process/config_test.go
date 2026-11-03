@@ -1,13 +1,18 @@
 package process
 
 import (
+	"bytes"
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/v0dol4zik/ratbox/internal/core/clash"
 	"github.com/v0dol4zik/ratbox/internal/model"
 	"github.com/v0dol4zik/ratbox/internal/sub"
 )
@@ -206,4 +211,56 @@ func TestBuildConfigAutoRU(t *testing.T) {
 	if auto.Type != "urltest" || len(auto.Outbounds) != len(nodes) {
 		t.Errorf("bad urltest group: %+v", auto)
 	}
+}
+
+// TestCoreStartSmoke catches runtime failures that `sing-box check` misses
+// (dangling selector deps, bad dns wiring...): it actually boots the core
+// with the mixed-only config and waits for the clash api.
+func TestCoreStartSmoke(t *testing.T) {
+	bin := sbPath(t)
+	n, err := sub.ParseLink("vless://uuid@1.2.3.4:8443?type=ws&security=tls&sni=cd.example.com&host=cd.example.com&path=%2Fws#WS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []*model.Node{n}
+	dir := t.TempDir()
+	_, secret, err := freeController()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// pick a free local port for the mixed inbound (FlClash etc. may hold 2080)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixedPort := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: n.Tag, Auto: true},
+		mixedPort, "127.0.0.1:39090", secret, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "smoke.json")
+	if err := os.WriteFile(cfgPath, cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "run", "-c", cfgPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Stdout = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); _ = cmd.Wait() }()
+
+	client := clash.New("http://127.0.0.1:39090", secret)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := client.Version(); err == nil {
+			return // api answered: the core booted
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("core did not boot;log:\n%s", stderr.String())
 }
