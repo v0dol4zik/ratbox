@@ -295,7 +295,7 @@ func (a *App) renderFooter() string {
 	var keys string
 	switch a.view {
 	case ViewNodes:
-		keys = "↑↓ select · Enter set active · t test · T test all · n add link · d remove · m tun · y auto · p profile · s start/stop"
+		keys = "↑↓ select · Enter connect · t test · T test all · n add link · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewSubs:
 		keys = "↑↓ select · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewLogs:

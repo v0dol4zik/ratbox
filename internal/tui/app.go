@@ -912,21 +912,20 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.nodeIdx < len(a.store.Nodes)-1 {
 				a.nodeIdx++
 			}
-		case "Enter":
+		case "enter":
+			// Enter = connect: selects the node and, when the core is
+			// stopped, starts it right away with that node
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
 			n := a.store.Nodes[a.nodeIdx]
-			if a.store.ActiveNodeID == n.ID {
-				return a, nil
+			if a.mgr.Running() {
+				return a, a.selectNodeCmd(n)
 			}
-			if !a.mgr.Running() {
-				a.store.ActiveNodeID = n.ID
-				_ = a.store.Save()
-				a.status = "selected: " + n.Tag
-				return a, nil
-			}
-			return a, a.selectNodeCmd(n)
+			a.store.ActiveNodeID = n.ID
+			_ = a.store.Save()
+			a.status = "starting core on " + n.Tag + "…"
+			return a, a.startCoreCmd()
 		case "t":
 			if len(a.store.Nodes) == 0 {
 				return a, nil

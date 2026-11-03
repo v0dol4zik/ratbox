@@ -7,12 +7,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/v0dol4zik/ratbox/internal/model"
 )
@@ -137,6 +140,8 @@ func (m *Manager) Start(opts StartOptions) error {
 	if err != nil {
 		return fmt.Errorf("controller: %w", err)
 	}
+	killOrphanCores(m.cfg.DataDir, m.cfg.MixedPort)
+
 	if opts.ServicePort == 0 {
 		servicePort, err := freeLocalPort()
 		if err != nil {
@@ -402,6 +407,62 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 // ResolveBinaryPath resolves the core binary location (store path, or PATH lookup).
 func ResolveBinaryPath(cfgPath string) (string, error) {
 	return resolveBinary(cfgPath)
+}
+
+// killOrphanCores finds leftover sing-box processes started by a previous
+// ratbox run (identified by our generated config path) and terminates them
+// so a fresh start can bind its ports. A crashed/killed TUI leaves the
+// supervised core running otherwise, and the next start fails with a busy
+// mixed port.
+func killOrphanCores(dataDir string, mixedPort int) {
+	cfgPath := filepath.Join(dataDir, "sing-box.json")
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		args := strings.Split(string(raw), "\x00")
+		if len(args) == 0 || args[0] == "" {
+			continue
+		}
+		base := filepath.Base(args[0])
+		if base != "sing-box" {
+			continue
+		}
+		// must be "sing-box run -c <our config>"
+		ours := false
+		for i, a := range args {
+			if a == "-c" && i+1 < len(args) && args[i+1] == cfgPath {
+				ours = true
+				break
+			}
+		}
+		if !ours {
+			continue
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	// wait for the mixed port to actually become free (SO_REUSE-less cores)
+	if mixedPort <= 0 {
+		return
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", mixedPort)
+	for i := 0; i < 20; i++ {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			return // port is free
+		}
+		_ = c.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // RunSetCapsSudo grants CAP_NET_ADMIN/CAP_NET_RAW to the core binary with
