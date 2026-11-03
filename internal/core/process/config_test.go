@@ -94,6 +94,27 @@ func TestSplithttpRejected(t *testing.T) {
 	}
 }
 
+func TestTUNStackDefaultAndOverride(t *testing.T) {
+	for _, tt := range []struct{ override, want string }{{"", "gvisor"}, {"mixed", "mixed"}, {"system", "system"}} {
+		cfg, err := BuildConfig(StartOptions{Tun: true, TunStack: tt.override, Nodes: []*model.Node{{Tag: "test", Outbound: json.RawMessage(`{"type":"http","server":"127.0.0.1","server_port":18081}`)}}}, 2080, "127.0.0.1:9091", "secret", t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Inbounds []struct {
+				Type  string `json:"type"`
+				Stack string `json:"stack"`
+			} `json:"inbounds"`
+		}
+		if err := json.Unmarshal(cfg, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded.Inbounds) == 0 || decoded.Inbounds[0].Type != "tun" || decoded.Inbounds[0].Stack != tt.want {
+			t.Fatalf("override %q: %+v", tt.override, decoded.Inbounds)
+		}
+	}
+}
+
 // TestBuildConfigTUN validates the tun-mode config against the real binary.
 func TestBuildConfigTUN(t *testing.T) {
 	bin := sbPath(t)

@@ -151,7 +151,7 @@ type StartOptions struct {
 	Nodes          []*model.Node
 	ActiveTag      string
 	Tun            bool
-	TunStack       string // empty uses the core default; explicit override for diagnostics
+	TunStack       string // empty uses gvisor; explicit override for diagnostics
 	Auto           bool   // urltest group is the selector default
 	RoutingProfile int    // ProfileGlobal | ProfileRUBypass
 	ServicePort    int    // loopback port of the always-direct service inbound
@@ -408,9 +408,14 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 			"strict_route":         true,
 			"dns_mode":             "disabled",
 		}}, inbounds...)
-		if opts.TunStack != "" {
-			inbounds[0]["stack"] = opts.TunStack
+		// The core's implicit mixed/system stack reinjects TCP into Linux
+		// INPUT, where a common UFW default-deny policy drops it. Userspace
+		// TCP avoids requiring firewall exceptions or disabling host security.
+		stack := opts.TunStack
+		if stack == "" {
+			stack = "gvisor"
 		}
+		inbounds[0]["stack"] = stack
 		// DNS must be handled before the private-IP bypass (e.g. LAN DNS).
 		rules = append(rules, map[string]any{"protocol": "dns", "action": "hijack-dns"})
 		// dns through the tunnel to protect from poisoning;

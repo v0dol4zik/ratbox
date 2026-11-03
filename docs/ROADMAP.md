@@ -43,6 +43,23 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.10 "Fix TUN TCP with default-deny INPUT firewalls"
+
+- [x] user-provided nft snapshot contains UFW IPv4/IPv6 INPUT default DROP,
+        no ratbox0 allowance, and no third-party redirect rules in that snapshot.
+        Earlier attribution to Throne was not established for this failing run
+- [x] reproduced in private namespaces with an UFW-like INPUT policy: mixed
+        stack TCP times out; ratbox0 INPUT drop counter increases. UDP ingress
+        in the user's log is consistent with mixed TCP/UDP taking different paths
+- [x] explicitly use gvisor for TUN instead of sing-box's implicit mixed stack;
+        userspace TCP avoids Linux INPUT reinjection. No host firewall changes,
+        sudo rules, broad accept rules or disabling UFW are required
+- [x] same namespace topology/firewall succeeds with the new default: exact
+        ingress probe, IPv4/IPv6 proxy payload, growing totals, cleanup/restart
+- [x] config default/override regression; real core config validation and race tests
+- [ ] verify the new default on the real host without competing interception;
+        active node's REALITY verification error remains a separate failure
+
 ## v0.6.9 "Do not confuse probe dial timeout with TUN failure"
 
 - [x] poll exact probe connection concurrently with dialing, not after a

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -33,7 +34,7 @@ func TestTUNNamespace(t *testing.T) {
 		testNamespaceClient(t)
 		return
 	}
-	for _, tool := range []string{"unshare", "nsenter", "ip", "sh", "mount"} {
+	for _, tool := range []string{"unshare", "nsenter", "ip", "sh", "mount", "nft"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " not installed")
 		}
@@ -49,6 +50,16 @@ func TestTUNNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, tc := range []struct{ name, stack, firewall string }{
+		{"default", "", ""},
+		{"input_drop_mixed_stack", "mixed", "1"},
+		{"input_drop_ratbox_default", "", "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { runTUNNamespace(t, self, bin, tc.stack, tc.firewall) })
+	}
+}
+
+func runTUNNamespace(t *testing.T, self, bin, stack, firewall string) {
 	dir := t.TempDir()
 	script := `set -eu
 mount --make-rprivate /
@@ -72,6 +83,18 @@ nsenter -t "$peer" -n ip link set rb-peer up
 RATBOX_NETNS_MODE=proxy nsenter -t "$peer" -n "$SELF" -test.run '^TestTUNNamespace$' -test.v & proxy=$!
 for i in $(seq 1 50); do [ ! -f "$READY" ] || break; sleep 0.1; done
 [ -f "$READY" ]
+if [ -n "$RATBOX_NETNS_FIREWALL" ]; then
+ nft -f - <<'NFT'
+table inet ratbox_test_filter {
+ chain input {
+  type filter hook input priority filter; policy drop;
+  iifname "lo" accept
+  ct state established,related accept
+  iifname "ratbox0" counter drop
+ }
+}
+NFT
+fi
 RATBOX_NETNS_MODE=client "$SELF" -test.run '^TestTUNNamespace$' -test.v
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -80,7 +103,7 @@ RATBOX_NETNS_MODE=client "$SELF" -test.run '^TestTUNNamespace$' -test.v
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
-	cmd.Env = append(os.Environ(), "SELF="+self, "READY="+filepath.Join(dir, "ready"), "SING_BOX_BIN="+bin)
+	cmd.Env = append(os.Environ(), "SELF="+self, "READY="+filepath.Join(dir, "ready"), "SING_BOX_BIN="+bin, "RATBOX_NETNS_STACK="+stack, "RATBOX_NETNS_FIREWALL="+firewall)
 	out, err := cmd.CombinedOutput()
 	t.Logf("%s", out)
 	if err != nil {
@@ -126,7 +149,7 @@ func testNamespaceClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := StartOptions{Tun: true, ActiveTag: "fake-proxy", Nodes: []*model.Node{{Tag: "fake-proxy", Outbound: json.RawMessage(`{"type":"http","server":"198.18.0.2","server_port":18081}`)}}}
+	opts := StartOptions{Tun: true, TunStack: os.Getenv("RATBOX_NETNS_STACK"), ActiveTag: "fake-proxy", Nodes: []*model.Node{{Tag: "fake-proxy", Outbound: json.RawMessage(`{"type":"http","server":"198.18.0.2","server_port":18081}`)}}}
 	if err := mgr.Start(opts); err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +181,21 @@ func testNamespaceClient(t *testing.T) {
 	}
 	if diagnostic := mgr.TUNRouteDiagnostic(); !strings.Contains(diagnostic, "via "+TunName) {
 		t.Fatal(diagnostic)
+	}
+	if os.Getenv("RATBOX_NETNS_FIREWALL") != "" && opts.TunStack == "mixed" {
+		tr := &http.Transport{Proxy: nil, DisableKeepAlives: true}
+		defer tr.CloseIdleConnections()
+		hc := &http.Client{Transport: tr, Timeout: time.Second}
+		if resp, err := hc.Get("http://198.19.0.2:18080/"); err == nil {
+			resp.Body.Close()
+			t.Fatal("expected mixed stack TCP to be blocked by INPUT drop")
+		}
+		out, err := exec.Command("nft", "list", "chain", "inet", "ratbox_test_filter", "input").CombinedOutput()
+		if err != nil || !regexp.MustCompile(`iifname "ratbox0" counter packets [1-9][0-9]* bytes`).Match(out) {
+			t.Fatalf("timeout without proof of INPUT drops: %s (%v)", out, err)
+		}
+		t.Logf("reproduced: mixed TUN TCP blocked with INPUT drop: %s", out)
+		return
 	}
 	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 3*time.Second)
 	probeErr := VerifyTUNIngress(probeCtx, api)
