@@ -8,17 +8,17 @@ here in the same commit.
 - [x] **F0 tabs with arrows, no more `:`
         (←/→ switch nodes/subs/logs/config from anywhere; the vim-style
         command mode is removed entirely: settings live on the tab)
-- [ ] **P1.9** drop xray everywhere (decision: sing-box only, xray is
+- [x] **P1.9** drop xray everywhere (decision: sing-box only, xray is
         outdated); resolveBinary no longer falls back to xray
-- [ ] **P1.1** Manager.UpdateConfig — mixed_port/core_binary changes
+- [x] **P1.1** Manager.UpdateConfig — mixed_port/core_binary changes
         actually apply to a running core instead of lying
-- [ ] **P1.5** reset traffic counters on core stop/restart (negative rates)
-- [ ] **P1.6** renderLogs coloring was dead code (local copy); fix + paint
+- [x] **P1.5** reset traffic counters on core stop/restart (negative rates)
+- [x] **P1.6** renderLogs coloring was dead code (local copy); fix + paint
         FATAL/ERROR red
-- [ ] **P1.7** padRight byte-slice/panic on very narrow terminals
-- [ ] **P1.8** sudo password: zeroize the append() copy; document that the
+- [x] **P1.7** padRight byte-slice/panic on very narrow terminals
+- [x] **P1.8** sudo password: zeroize the append() copy; document that the
         inputBuf string cannot be wiped in Go
-- [ ] **P1.2/P1.3/P1.4** move all model mutations from Cmd goroutines into
+- [x] **P1.2/P1.3/P1.4** move all model mutations from Cmd goroutines into
         Update (data races); refuse subscriptions that yield 0 nodes;
         surface restart errors; ensureSelection() whenever the active node
         disappears (update/remove/delete) — no silent dead-node default
@@ -31,7 +31,7 @@ here in the same commit.
 - [ ] P2.3 rewrite footer hints (four tabs, arrows, no lying)
 - [ ] P2.4 User-Agent from main.version instead of hardcoded "ratbox/0.1"
 - [ ] P2.5 unify log height calc (G misses one line)
-- [ ] P2.6 (obsolete with the `:` removal) — case ":" without return
+- [x] P2.6 (obsolete with the `:` removal) — case ":" without return
 - [ ] P2.7 clean latency map of removed nodes
 - [ ] P2.8 dead code: NodesOfSub, Manager.String, fake retry loop in startCoreCmd
 - [ ] unit tests: normKey, padRight, killOrphanCores, ReplaceSubNodes
