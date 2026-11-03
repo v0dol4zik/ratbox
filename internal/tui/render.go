@@ -93,7 +93,7 @@ func (a *App) renderSettings(height int) string {
 	voff := visibleOffset(a.setIdx, settingsRows, height)
 	var lines []string
 	lines = append(lines, " "+dimStyle.Render("SET   VALUE")+padRight("", 44)+
-		dimStyle.Render("описание"))
+		dimStyle.Render("description"))
 	for i := voff; i < settingsRows; i++ {
 		marker := " "
 		style := normalStyle
@@ -104,10 +104,10 @@ func (a *App) renderSettings(height int) string {
 		var name, val, hint string
 		switch i {
 		case setTun:
-			name, hint = "tun_mode", "маршрутизация вся системы через ядро"
+			name, hint = "tun_mode", "route all system traffic through the core"
 			val = onOff(a.store.TunMode)
 		case setAuto:
-			name, hint = "auto_mode", "селектор всегда на самой быстрой ноде"
+			name, hint = "auto_mode", "selector always on the fastest node"
 			val = onOff(a.store.AutoMode)
 		case setProfile:
 			name, hint = "routing_profile", "global / RU→direct"
@@ -117,13 +117,13 @@ func (a *App) renderSettings(height int) string {
 				val = "global"
 			}
 		case setAutostart:
-			name, hint = "autostart", "запускать ядро при старте ratbox"
+			name, hint = "autostart", "start the core with ratbox"
 			val = onOff(a.store.AutoStart)
 		case setMixedPort:
-			name, hint = "mixed_port", "локальный HTTP/SOCKS прокси (enter — изменить)"
+			name, hint = "mixed_port", "local HTTP/SOCKS proxy (enter to change)"
 			val = fmt.Sprintf("%d", a.store.MixedPort)
 		case setCoreBinary:
-			name, hint = "core_binary", "путь к бинарю, enter — изменить (пусто = PATH)"
+			name, hint = "core_binary", "binary path, enter to change (empty = PATH)"
 			if a.store.CoreBinary == "" {
 				val = "(auto)"
 			} else {
@@ -140,13 +140,13 @@ func (a *App) renderSettings(height int) string {
 func actionName(act cmdAction) string {
 	switch act {
 	case actSettings:
-		return "настройки"
+		return "settings"
 	case actQuit:
-		return "выход"
+		return "quit"
 	case actSave:
-		return "сохранить"
+		return "save"
 	case actHelp:
-		return "помощь"
+		return "help"
 	}
 	return ""
 }
@@ -301,7 +301,7 @@ func (a *App) renderFooter() string {
 	case ViewLogs:
 		keys = "j/k,g/G scroll · s start/stop · : commands"
 	case ViewSettings:
-		keys = "↑↓ select · enter/space применить · esc назад · : команды"
+		keys = "↑↓ select · enter/space apply · esc back · : commands"
 	}
 	keys += " · 1/2/3 tabs · q quit"
 	var status string

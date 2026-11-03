@@ -126,8 +126,9 @@ func (a *App) startCoreCmd() tea.Cmd {
 			// first failed attempt with a tun permission problem:
 			// ask for the sudo password right in the TUI. polkit/pkexec is
 			// deliberately NOT used here: without a GUI agent pkexec builds
-			// a textual prompt в the терминал поверх TUI и клавиши уходят
-			// мимо — a separate /dev/tty reader cannot coexist with bubbletea.
+			// a textual prompt in the terminal on top of the TUI and the
+			// keystrokes are stolen by bubbletea — a separate /dev/tty
+			// reader cannot coexist with it.
 			if ok && cm.tunPerm && attempt == 0 {
 				bin, binErr := process.ResolveBinaryPath(a.store.CoreBinary)
 				if binErr != nil {
@@ -164,7 +165,7 @@ func (a *App) tryStartCore() tea.Msg {
 	if !ok {
 		_ = a.mgr.Stop()
 		if a.store.TunMode && a.coreDiedOnPerm() {
-			return coreStateMsg{false, "", errors.New("недостаточно прав для tun (CAP_NET_ADMIN)"), true}
+			return coreStateMsg{false, "", errors.New("insufficient permissions for tun (CAP_NET_ADMIN)"), true}
 		}
 		detail := a.lastCoreErr()
 		return coreStateMsg{false, "", fmt.Errorf("clash api not responding%s", detail), false}
@@ -186,10 +187,10 @@ func (a *App) toggleTun() tea.Cmd {
 		state = "on"
 	}
 	if a.mgr.Running() {
-		a.status = "tun " + state + " — перезапуск ядра…"
+		a.status = "tun " + state + " — restarting core…"
 		return a.startCoreCmd()
 	}
-	a.status, a.statusErr = "tun "+state+" (применится при старте)", false
+	a.status, a.statusErr = "tun "+state+" (applies at start)", false
 	return nil
 }
 
@@ -203,10 +204,10 @@ func (a *App) toggleAuto() tea.Cmd {
 		state = "on"
 	}
 	if a.mgr.Running() {
-		a.status = "auto " + state + " — перезапуск ядра…"
+		a.status = "auto " + state + " — restarting core…"
 		return a.startCoreCmd()
 	}
-	a.status, a.statusErr = "auto "+state+" (применится при старте)", false
+	a.status, a.statusErr = "auto "+state+" (applies at start)", false
 	return nil
 }
 
@@ -226,10 +227,10 @@ func (a *App) applyProfileStatus() tea.Cmd {
 		name = "RU→direct"
 	}
 	if a.mgr.Running() {
-		a.status = "маршрутизация " + name + " — перезапуск ядра…"
+		a.status = "routing " + name + " — restarting core…"
 		return a.startCoreCmd()
 	}
-	a.status, a.statusErr = "маршрутизация "+name+" (применится при старте)", false
+	a.status, a.statusErr = "routing "+name+" (applies at start)", false
 	return nil
 }
 
@@ -245,7 +246,7 @@ func (a *App) toggleAutostart() tea.Cmd {
 	return nil
 }
 
-// settingsRowCount из render: порядок строк должен совпадать с applySetting.
+// settings row order must match applySetting below and renderSettings.
 const (
 	setTun = iota
 	setAuto
@@ -283,42 +284,42 @@ func (a *App) editSetting(idx int) tea.Cmd {
 			port, err := strconv.Atoi(strings.TrimSpace(s))
 			if err != nil || port < 1 || port > 65535 {
 				return func() tea.Msg {
-					return opDoneMsg{text: "порт: нужно целое 1-65535", err: fmt.Errorf("%q", s)}
+					return opDoneMsg{text: "port: expected an integer 1-65535", err: fmt.Errorf("%q", s)}
 				}
 			}
 			if port == a.store.MixedPort {
-				return func() tea.Msg { return opDoneMsg{text: "порт не изменился", err: nil} }
+				return func() tea.Msg { return opDoneMsg{text: "port unchanged", err: nil} }
 			}
 			a.store.MixedPort = port
 			_ = a.store.Save()
 			if a.mgr.Running() {
-				a.status = fmt.Sprintf("порт %d — перезапуск ядра…", port)
+				a.status = fmt.Sprintf("port %d — restarting core…", port)
 				return a.startCoreCmd()
 			}
 			return func() tea.Msg {
-				return opDoneMsg{text: fmt.Sprintf("mixed port %d (применится при старте)", port), err: nil}
+				return opDoneMsg{text: fmt.Sprintf("mixed port %d (applies at start)", port), err: nil}
 			}
 		})
 	case setCoreBinary:
 		cur := a.store.CoreBinary
 		if cur == "" {
-			cur = "(авто: поиск sing-box в PATH)"
+			cur = "(auto: sing-box from PATH)"
 		}
 		a.beginInput(fmt.Sprintf("core binary [%s]: ", cur), func(s string) tea.Cmd {
 			s = strings.TrimSpace(s)
 			if s != "" {
 				if _, err := process.ResolveBinaryPath(s); err != nil {
-					return func() tea.Msg { return opDoneMsg{text: "бинарь не найден", err: err} }
+					return func() tea.Msg { return opDoneMsg{text: "binary not found", err: err} }
 				}
 			}
 			_ = a.store.Save()
 			a.store.CoreBinary = s
 			_ = a.store.Save()
 			if a.mgr.Running() {
-				a.status = "core binary — перезапуск ядра…"
+				a.status = "core binary — restarting core…"
 				return a.startCoreCmd()
 			}
-			return func() tea.Msg { return opDoneMsg{text: "core binary обновлён", err: nil} }
+			return func() tea.Msg { return opDoneMsg{text: "core binary updated", err: nil} }
 		})
 	}
 	return nil
@@ -413,7 +414,7 @@ func resolveCommand(input string) (cmdAction, error) {
 			if !matched {
 				found, matched = a, true
 			} else if a != found {
-				return actNone, fmt.Errorf("неоднозначно :%s — уточните: %s", cmd, shown)
+				return actNone, fmt.Errorf("ambiguous :%s — try: %s", cmd, shown)
 			}
 			if shown == "" {
 				shown = name
@@ -423,7 +424,7 @@ func resolveCommand(input string) (cmdAction, error) {
 		}
 	}
 	if !matched {
-		return actNone, fmt.Errorf("нет команды :%s", cmd)
+		return actNone, fmt.Errorf("no such command :%s", cmd)
 	}
 	return found, nil
 }
@@ -455,7 +456,7 @@ func (a *App) runCommand(raw string) tea.Cmd {
 		}
 		return nil
 	case actHelp:
-		a.status, a.statusErr = "команды: config/settings, q (выход), w (сохранить)", false
+		a.status, a.statusErr = "commands: config/settings, q (quit), w (save)", false
 		return nil
 	}
 	return nil
@@ -500,7 +501,7 @@ func (a *App) lastCoreErr() string {
 			return ": " + strings.TrimSpace(l)
 		}
 	}
-	return ", смотри логи (3)"
+	return ", see the logs tab (3)"
 }
 
 // coreDiedOnPerm reports whether the core died because of missing capabilities.
@@ -666,7 +667,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.running = false
 			a.startedAt = time.Time{}
 			a.resetClient()
-			a.status, a.statusErr = "ядро упало — смотри вкладку 3 (логи)", true
+			a.status, a.statusErr = "core died — see the logs tab (3)", true
 		}
 		if a.client != nil && m.err == nil {
 			prev := a.traffic
@@ -686,7 +687,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case needSudoPromptMsg:
 		if a.sudoAttempts >= 3 {
-			a.status, a.statusErr = "выполни вручную: sudo setcap 'cap_net_admin,cap_net_raw=ep' "+m.binary, true
+			a.status, a.statusErr = "run manually: sudo setcap 'cap_net_admin,cap_net_raw=ep' "+m.binary, true
 			return a, nil
 		}
 		a.sudoBin = m.binary
@@ -699,7 +700,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				bin = "<sing-box>"
 			}
 		}
-		a.beginPasswordInput("sudo пароль (setcap, Esc — отмена): ", func(pw string) tea.Cmd {
+		a.beginPasswordInput("sudo password (setcap, Esc to cancel): ", func(pw string) tea.Cmd {
 			return a.sudoSetcapCmd(pw, bin)
 		})
 		return a, nil
@@ -726,13 +727,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.err != nil && process.IsAuthError(m.err) {
 			if a.sudoAttempts < 3 {
 				a.sudoAttempts++
-				a.status, a.statusErr = "неверный пароль, попробуй ещё раз", true
-				a.beginPasswordInput("sudo пароль (setcap, Esc — отмена): ", func(pw string) tea.Cmd {
+				a.status, a.statusErr = "wrong password, try again", true
+				a.beginPasswordInput("sudo password (setcap, Esc to cancel): ", func(pw string) tea.Cmd {
 					return a.sudoSetcapCmd(pw, a.sudoBin)
 				})
 				return a, nil
 			}
-			a.status, a.statusErr = "выполни вручную: sudo setcap 'cap_net_admin,cap_net_raw=ep' "+a.sudoBin, true
+			a.status, a.statusErr = "run manually: sudo setcap 'cap_net_admin,cap_net_raw=ep' "+a.sudoBin, true
 			return a, nil
 		}
 		if m.err != nil {
@@ -982,7 +983,7 @@ func (a *App) sudoSetcapCmd(pw, bin string) tea.Cmd {
 		if err != nil {
 			msg := err.Error()
 			if strings.Contains(msg, "incorrect password") || strings.Contains(msg, "no password was provided") {
-				return opDoneMsg{text: "неверный пароль sudo", err: err}
+				return opDoneMsg{text: "wrong sudo password", err: err}
 			}
 			return opDoneMsg{text: "setcap", err: err}
 		}

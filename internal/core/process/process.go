@@ -411,11 +411,11 @@ func ResolveBinaryPath(cfgPath string) (string, error) {
 func RunSetCapsSudo(binary string, password []byte) error {
 	sudo, err := exec.LookPath("sudo")
 	if err != nil {
-		return fmt.Errorf("sudo не найден")
+		return fmt.Errorf("sudo not found")
 	}
 	setcap, err := exec.LookPath("setcap")
 	if err != nil {
-		return fmt.Errorf("setcap не найден (установи libcap)")
+		return fmt.Errorf("setcap not found (install libcap)")
 	}
 	caps := "cap_net_admin,cap_net_raw=ep"
 	// 1) try without touching the password reader: cached ticket / NOPASSWD
@@ -465,6 +465,8 @@ func IsAuthError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	// NOTE: the non-english entries below match localized sudo output
+	// (e.g. "Попробуйте ещё раз"), they are detection patterns, not UI.
 	for _, p := range []string{
 		"incorrect password",
 		"no password was provided",
