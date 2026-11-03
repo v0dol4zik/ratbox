@@ -58,7 +58,7 @@ func TestBuildConfigChecks(t *testing.T) {
 	nodes = append(nodes, n)
 
 	dir := t.TempDir()
-	cfg, err := BuildConfig(nodes, nodes[0].Tag, 2080, "127.0.0.1:9090", "topsecret", dir)
+	cfg, err := BuildConfig(nodes, nodes[0].Tag, 2080, "127.0.0.1:9090", "topsecret", dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,5 +84,36 @@ func TestSplithttpRejected(t *testing.T) {
 	_, err := sub.ParseLink("vless://uuid@xh.example.com:443?security=tls&type=splithttp&path=%2Fx&host=xh.example.com&sni=xh.example.com#XHTTP")
 	if err == nil {
 		t.Fatal("expected error for splithttp transport")
+	}
+}
+
+// TestBuildConfigTUN validates the tun-mode config against the real binary.
+func TestBuildConfigTUN(t *testing.T) {
+	bin := sbPath(t)
+	links := []string{
+		"vless://uuid@1.2.3.4:8443?type=ws&security=tls&sni=cd.example.com&host=cd.example.com&path=%2Fws#WS",
+		"hysteria2://authpass@hy.example.com:36712?sni=hy.example.com#Hy2",
+	}
+	var nodes []*model.Node
+	for _, link := range links {
+		n, err := sub.ParseLink(link)
+		if err != nil {
+			t.Fatalf("ParseLink(%s): %v", link, err)
+		}
+		nodes = append(nodes, n)
+	}
+	dir := t.TempDir()
+	cfg, err := BuildConfig(nodes, nodes[0].Tag, 2080, "127.0.0.1:9091", "topsecret", dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(cfgPath, cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "check", "-c", cfgPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sing-box check (tun) failed:\n%s", out)
 	}
 }

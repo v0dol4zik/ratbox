@@ -22,6 +22,7 @@ type Subscription struct {
 type Store struct {
 	Version    int    `json:"version"`
 	MixedPort  int    `json:"mixed_port"`
+	TunMode    bool   `json:"tun_mode"`
 	CoreBinary string `json:"core_binary"` // optional path to sing-box binary
 	AutoStart  bool   `json:"autostart"`
 

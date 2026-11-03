@@ -91,7 +91,7 @@ func (m *Manager) log(line string) {
 
 // Start launches the core with the given nodes.
 // activeTag is preselected in the "ratbox" selector.
-func (m *Manager) Start(nodes []*model.Node, activeTag string) error {
+func (m *Manager) Start(nodes []*model.Node, activeTag string, tun bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.isRunning() {
@@ -105,7 +105,7 @@ func (m *Manager) Start(nodes []*model.Node, activeTag string) error {
 	if err != nil {
 		return fmt.Errorf("controller: %w", err)
 	}
-	cfgJSON, err := BuildConfig(nodes, activeTag, m.cfg.MixedPort, controller, secret, m.cfg.DataDir)
+	cfgJSON, err := BuildConfig(nodes, activeTag, m.cfg.MixedPort, controller, secret, m.cfg.DataDir, tun)
 	if err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func resolveBinary(cfgPath string) (string, error) {
 
 // BuildConfig renders a sing-box config with:
 // mixed inbound, selector with all nodes, clash api, cache file.
-func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controller, secret, dataDir string) ([]byte, error) {
+func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controller, secret, dataDir string, tun bool) ([]byte, error) {
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no nodes to start with")
 	}
@@ -232,32 +232,62 @@ func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controlle
 		tags = append(tags, n.Tag)
 		outbounds = append(outbounds, raw)
 	}
-	selector["outbounds"] = tags
+	// keep "direct" selectable so the user can bypass everything
+	selector["outbounds"] = append(tags, "direct")
 	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
+
+	// inbounds: tun first (if enabled) + loopback mixed for local tests
+	inbounds := []map[string]any{
+		{
+			"type":        "mixed",
+			"tag":         "mixed-in",
+			"listen":      "127.0.0.1",
+			"listen_port": mixedPort,
+		},
+	}
+	dns := map[string]any{
+		"servers": []map[string]any{
+			{"type": "local", "tag": "dns-local"},
+		},
+	}
+	route := map[string]any{
+		"auto_detect_interface": true,
+		"final":                 SelectorTag,
+	}
+	if tun {
+		inbounds = append([]map[string]any{{
+			"type":         "tun",
+			"tag":          "tun-in",
+			"address":      []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
+			"mtu":          9000,
+			"auto_route":   true,
+			"strict_route": true,
+		}}, inbounds...)
+		route["rules"] = []map[string]any{
+			{"action": "sniff"},
+			{"protocol": "dns", "action": "hijack-dns"},
+		}
+		route["default_domain_resolver"] = "dns-local"
+		// dns through the tunnel to protect from poisoning;
+		// node hostnames still resolve via dns-local (domain_resolver above)
+		dns["servers"] = append(dns["servers"].([]map[string]any), map[string]any{
+			"type":   "https",
+			"tag":    "dns-remote",
+			"server": "1.1.1.1",
+			"detour": SelectorTag,
+		})
+		dns["final"] = "dns-remote"
+	}
 
 	cfg := map[string]any{
 		"log": map[string]any{
 			"level":     "info",
 			"timestamp": true,
 		},
-		"dns": map[string]any{
-			"servers": []map[string]any{
-				{"type": "local", "tag": "dns-local"},
-			},
-		},
-		"inbounds": []map[string]any{
-			{
-				"type":        "mixed",
-				"tag":         "mixed-in",
-				"listen":      "127.0.0.1",
-				"listen_port": mixedPort,
-			},
-		},
+		"dns":       dns,
+		"inbounds":  inbounds,
 		"outbounds": outbounds,
-		"route": map[string]any{
-			"auto_detect_interface": true,
-			"final":                 SelectorTag,
-		},
+		"route":     route,
 		"experimental": map[string]any{
 			"clash_api": map[string]any{
 				"external_controller": controller,

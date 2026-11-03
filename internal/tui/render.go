@@ -44,8 +44,11 @@ func (a *App) renderHeader() string {
 		titleStyle.Render("ratbox"),
 		stateStyle.Render(coreState),
 		dimStyle.Render(fmt.Sprintf("proxy 127.0.0.1:%d", a.store.MixedPort)),
-		"active: " + active,
 	}
+	if a.store.TunMode {
+		parts = append(parts, warnStyle.Render("tun"))
+	}
+	parts = append(parts, "active: "+active)
 	if a.running {
 		parts = append(parts,
 			dimStyle.Render(fmt.Sprintf("↑ %s/s ↓ %s/s", humanBytes(a.rateUp), humanBytes(a.rateDown))),

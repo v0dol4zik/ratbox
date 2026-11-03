@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -108,7 +109,7 @@ func (a *App) startCoreCmd() tea.Cmd {
 		if n := a.store.Node(a.store.ActiveNodeID); n != nil {
 			activeTag = n.Tag
 		}
-		if err := a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag); err != nil {
+		if err := a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag, a.store.TunMode); err != nil {
 			return coreStateMsg{false, "", err}
 		}
 		c := clash.New(a.mgr.Controller(), a.mgr.Secret())
@@ -122,8 +123,18 @@ func (a *App) startCoreCmd() tea.Cmd {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if !ok {
+			hint := ""
+			for _, l := range a.mgr.Logs() {
+				if strings.Contains(l, "operation not permitted") {
+					hint = "tun требует прав: sudo setcap 'cap_net_admin,cap_net_raw=ep' ~/.local/bin/sing-box"
+					break
+				}
+			}
+			if hint == "" {
+				hint = "clash api not responding, смотри логи (3)"
+			}
 			_ = a.mgr.Stop()
-			return coreStateMsg{false, "", fmt.Errorf("clash api not responding")}
+			return coreStateMsg{false, "", errors.New(hint)}
 		}
 		if activeTag != "" {
 			_ = c.Select(process.SelectorTag, activeTag)
@@ -252,7 +263,7 @@ func (a *App) restartIfRunning() {
 	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
 		activeTag = n.Tag
 	}
-	_ = a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag)
+	_ = a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag, a.store.TunMode)
 	a.resetClient()
 }
 
@@ -372,6 +383,18 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		a.view = (a.view + 1) % 3
 		return a, nil
+	case "m":
+		a.store.TunMode = !a.store.TunMode
+		_ = a.store.Save()
+		state := "off"
+		if a.store.TunMode {
+			state = "on"
+		}
+		if a.mgr.Running() {
+			a.status = "tun " + state + " — перезапуск ядра…"
+			return a, a.startCoreCmd()
+		}
+		a.status, a.statusErr = "tun "+state+" (применится при старте)", false
 	case "s":
 		if a.mgr.Running() {
 			return a, a.stopCoreCmd()

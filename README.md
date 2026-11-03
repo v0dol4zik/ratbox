@@ -12,6 +12,7 @@ latency and lets you switch nodes instantly via the clash api.
 - URLTest / delay measurement per node and for the whole list
 - traffic counters (up/down, per-second rate)
 - live core logs and generated-config inspection
+- TUN mode with auto_route + dns hijack (press `m` to toggle)
 
 ## Install
 
@@ -32,6 +33,20 @@ Run `ratbox`, then:
 
 Local proxy endpoint: `127.0.0.1:12334` (mixed http+socks; change `mixed_port` in
 `~/.local/share/ratbox/store.json` if something else occupies the port).
+
+## TUN mode
+
+TUN routes the whole system traffic through the core. On Linux the sing-box
+binary needs CAP_NET_ADMIN, once:
+
+    sudo setcap 'cap_net_admin,cap_net_raw=ep' $(readlink -f $(which sing-box))
+
+Then in the TUI press `m` to enable/disable and start the core. All traffic
+(including other apps) will go through the active node; DNS is hijacked and
+resolved via 1.1.1.1 through the tunnel to avoid poisoning.
+
+If the network breaks after a hard core crash (SIGKILL), starting and
+gracefully stopping the core again cleans up the routes; reboot also works.
 
 ## Notes on performance
 
