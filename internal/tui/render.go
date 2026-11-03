@@ -120,10 +120,10 @@ func (a *App) renderSettings(height int) string {
 			name, hint = "autostart", "запускать ядро при старте ratbox"
 			val = onOff(a.store.AutoStart)
 		case setMixedPort:
-			name, hint = "mixed_port", "локальный HTTP/SOCKS прокси"
+			name, hint = "mixed_port", "локальный HTTP/SOCKS прокси (enter — изменить)"
 			val = fmt.Sprintf("%d", a.store.MixedPort)
 		case setCoreBinary:
-			name, hint = "core_binary", "путь к бинарю или пусто = PATH"
+			name, hint = "core_binary", "путь к бинарю, enter — изменить (пусто = PATH)"
 			if a.store.CoreBinary == "" {
 				val = "(auto)"
 			} else {
@@ -279,7 +279,7 @@ func (a *App) renderFooter() string {
 	case ViewLogs:
 		keys = "j/k,g/G scroll · s start/stop · : commands"
 	case ViewSettings:
-		keys = "↑↓ select · enter/space toggle · e edit · esc back · : commands"
+		keys = "↑↓ select · enter/space применить · esc назад · : команды"
 	}
 	keys += " · 1/2/3 tabs · q quit"
 	var status string

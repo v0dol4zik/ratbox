@@ -826,8 +826,6 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", " ", "m", "y", "p":
 			return a, a.applySetting(a.setIdx)
-		case "e":
-			return a, a.editSetting(a.setIdx)
 		case "esc":
 			a.view = ViewNodes
 		}
