@@ -43,14 +43,15 @@ type App struct {
 	running bool
 	latency map[string]int
 	// sweep bookkeeping for the latency summary status
-	dSem      chan struct{} // caps concurrent delay tests at 5
-	testTotal int
-	testDone  int
-	testOk    int
-	testErr   string
-	traffic   clash.Traffic
-	rateDown  int64
-	rateUp    int64
+	dSem       chan struct{} // caps concurrent delay tests at 5
+	testTotal  int
+	testDone   int
+	testOk     int
+	testErr    string
+	tempActive bool // a throwaway test core is in flight
+	traffic    clash.Traffic
+	rateDown   int64
+	rateUp     int64
 
 	status    string
 	statusErr bool
@@ -113,6 +114,9 @@ type linkParsedMsg struct {
 
 // capsGrantedMsg: sudo setcap succeeded, the core may be started now.
 type capsGrantedMsg struct{}
+
+// tempCoreMsg reports a failed throwaway test core bootstrap.
+type tempCoreMsg struct{ err error }
 
 // nodeSelectedMsg carries a finished live selector switch; the model
 // (store, active id) is mutated in Update, never in the Cmd goroutine.
@@ -452,6 +456,69 @@ func (a *App) pickBestNodeCmd() tea.Cmd {
 	}
 }
 
+// tempTestCmd runs latency probes through a throwaway no-tun core started
+// just for the test: works with the main core stopped, never touches system
+// routes, dies right after collecting the results.
+func (a *App) tempTestCmd(tags []string) tea.Cmd {
+	nodes := deepCopyNodes(a.store.Nodes) // snapshots taken in Update
+	if tags == nil {
+		tags = make([]string, 0, len(nodes))
+		for _, n := range nodes {
+			tags = append(tags, n.Tag)
+		}
+	}
+	binary := a.store.CoreBinary
+	dataDir, _, err := store.DefaultDirs()
+	if err != nil {
+		return func() tea.Msg { return tempCoreMsg{err: err} }
+	}
+	testDir := filepath.Join(dataDir, "core-test")
+	return func() tea.Msg {
+		tm, err := process.NewTestManager(binary, testDir)
+		if err != nil {
+			return tempCoreMsg{err: err}
+		}
+		if err := tm.Start(process.StartOptions{Nodes: nodes}); err != nil {
+			return tempCoreMsg{err: err}
+		}
+		defer func() { _ = tm.Stop() }()
+		cc := clash.New(tm.Controller(), tm.Secret())
+		apiUp := false
+		for i := 0; i < 50; i++ {
+			if _, err := cc.Version(); err == nil {
+				apiUp = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !apiUp {
+			return tempCoreMsg{err: errors.New("temporary core: clash api not responding")}
+		}
+		var (
+			sem  = make(chan struct{}, 5)
+			wg   sync.WaitGroup
+			mu   sync.Mutex
+			msgs tea.BatchMsg
+		)
+		for _, tag := range tags {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(tag string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				ms, err := cc.Delay(tag, 5*time.Second, clash.DefaultTestURL)
+				mu.Lock()
+				defer mu.Unlock()
+				msgs = append(msgs, tea.Cmd(func() tea.Msg {
+					return delayMsg{tag: tag, ms: ms, err: err}
+				}))
+			}(tag)
+		}
+		wg.Wait()
+		return msgs
+	}
+}
+
 // serviceProxy returns the always-direct subscription channel of a running
 // core, or "" when the core is stopped (plain direct fetch is fine then).
 func (a *App) serviceProxy() string {
@@ -680,6 +747,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.testDone++
 		if a.testDone >= a.testTotal {
+			a.tempActive = false
 			if a.testTotal == 1 {
 				if m.err != nil {
 					a.status, a.statusErr = m.tag+": "+errShort(m.err), true
@@ -808,6 +876,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.status, a.statusErr = fmt.Sprintf("node %q added", node.Tag), false
 		return a, a.restartCoreCmd()
+
+	case tempCoreMsg:
+		a.tempActive = false
+		a.status, a.statusErr = "test core: "+errShort(m.err), true
+		return a, nil
 
 	case capsGrantedMsg:
 		a.status, a.statusErr = "caps granted — starting core…", false
@@ -956,15 +1029,18 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
-			if a.client == nil {
-				// tests go through the core; pretend nothing instead of
-				// painting every node dead with instant crosses
-				a.status, a.statusErr = "core is not running — press s to start it, then test", true
+			if a.tempActive {
 				return a, nil
 			}
 			n := a.store.Nodes[a.nodeIdx]
-			a.status = "testing " + n.Tag + "…"
 			a.testTotal, a.testDone, a.testOk, a.testErr = 1, 0, 0, ""
+			if a.client == nil {
+				// no core: probe through a throwaway no-tun instance
+				a.tempActive = true
+				a.status = "testing " + n.Tag + " (no core — temporary core…)…"
+				return a, a.tempTestCmd([]string{n.Tag})
+			}
+			a.status = "testing " + n.Tag + "…"
 			return a, delayCmd(a, n.Tag)
 		case "a", "T":
 			// "a" = test ALL without reaching for shift; "T" kept for
@@ -972,9 +1048,15 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
-			if a.client == nil {
-				a.status, a.statusErr = "core is not running — press s to start it, then test", true
+			if a.tempActive {
 				return a, nil
+			}
+			if a.client == nil {
+				// no core: probe through a throwaway no-tun instance
+				a.tempActive = true
+				a.status = "testing all nodes (no core — temporary core…)…"
+				a.testTotal, a.testDone, a.testOk, a.testErr = len(a.store.Nodes), 0, 0, ""
+				return a, a.tempTestCmd(nil)
 			}
 			a.status = "testing all nodes…"
 			a.testTotal, a.testDone, a.testOk, a.testErr = len(a.store.Nodes), 0, 0, ""

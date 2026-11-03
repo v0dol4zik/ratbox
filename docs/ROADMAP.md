@@ -24,6 +24,13 @@ here in the same commit.
         disappears (update/remove/delete) — no silent dead-node default
         under tun; e2e runs under -race
 
+## v0.6.1 "Tests without a running core"
+
+- [x] pressing t/a with the core stopped spins up a throwaway no-tun
+        sing-box on random free ports, probes, and kills it — testing no
+        longer requires the main core (tempActive guard, core-test data
+        dir, orphan cleanup by config path)
+
 ## v0.7.0 "Order"
 
 - [ ] P2.1 single-instance lock (flock); second ratbox says so, --force

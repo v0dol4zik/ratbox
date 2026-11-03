@@ -48,6 +48,18 @@ func NewManager(cfg Config) *Manager {
 	return &Manager{cfg: cfg}
 }
 
+// NewTestManager builds a manager for a throwaway no-tun core instance
+// used for latency tests when the main core is stopped: random free ports,
+// isolated data dir, no capabilities required, killed as soon as the
+// probes finish.
+func NewTestManager(coreBinary, dataDir string) (*Manager, error) {
+	port, err := freeLocalPort()
+	if err != nil {
+		return nil, err
+	}
+	return NewManager(Config{Binary: coreBinary, MixedPort: port, DataDir: dataDir}), nil
+}
+
 // UpdateConfig refreshes the runtime parameters (mixed port, core binary)
 // so a settings change actually applies on the next Start, not only after
 // a full ratbox restart.
