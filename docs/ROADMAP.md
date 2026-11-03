@@ -43,6 +43,20 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.4 "The polkit interrogation of systemd-resolved"
+
+- [x] live -race build caught the second one: isRunning() read
+        cmd.ProcessState under our mutex while Wait() writes the field
+        without taking it — the mutex protects nothing there. isRunning
+        now answers from m.started only (single source of truth, updated
+        exclusively under the lock)
+- [x] why a polkit prompt appears on every TUN start: sing-box 1.14 tun
+        dns_mode=hijack talks to systemd-resolved over D-Bus; our core is
+        a regular user, resolve1 asks polkit, no desktop agent → the text
+        prompt lands right on our tty. The sudo grant flow now installs
+        an idempotent polkit rule (49-ratbox-tun-dns.rules) for the
+        current user; x in the settings tab re-runs the grant
+
 ## v0.6.3 "Profile management + the first caught race"
 
 - [x] profile management keys in the subs tab: c clears the profile's

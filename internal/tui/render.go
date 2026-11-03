@@ -294,7 +294,7 @@ func (a *App) renderFooter() string {
 	case ViewLogs:
 		keys = "j/k,g/G scroll · s start/stop"
 	case ViewSettings:
-		keys = "↑↓ select · enter/space apply · esc back"
+		keys = "↑↓ select · enter/space apply · x fix tun+dns (sudo) · esc back"
 	}
 	keys += " · ←→ tabs · q quit"
 	var status string

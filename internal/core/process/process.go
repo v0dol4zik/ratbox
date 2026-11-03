@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -77,10 +78,13 @@ func (m *Manager) Running() bool {
 	return m.isRunning()
 }
 
+// isRunning answers from our own state only. Never probe
+// cmd.ProcessState here: Wait() writes that field without our mutex, so a
+// read here races with the waiter goroutine (caught by -race on a live
+// machine). m.started is set at Start under the lock and cleared by the
+// single waiter before waitDone closes — a single source of truth.
 func (m *Manager) isRunning() bool {
-	return m.cmd != nil && m.cmd.Process != nil &&
-		m.cmd.ProcessState == nil &&
-		m.started
+	return m.cmd != nil && m.cmd.Process != nil && m.started
 }
 
 // ServicePort returns the loopback port of the always-direct service inbound.
@@ -490,8 +494,13 @@ func killOrphanCores(dataDir string, mixedPort int) {
 }
 
 // RunSetCapsSudo grants CAP_NET_ADMIN/CAP_NET_RAW to the core binary with
-// a sudo password supplied by the user. The password goes directly into the
-// sudo stdin pipe, is zeroized afterwards and is never written to disk.
+// a sudo password supplied by the user, and installs (idempotently) a
+// polkit rule letting the current user configure systemd-resolved link
+// DNS without a password prompt. Without that rule every TUN start pulls
+// "Authentication is required to set domains" straight onto our tty —
+// sing-box 1.14 enables DNS hijack through systemd-resolved on Linux.
+// The password goes directly into the sudo stdin pipe, is zeroized
+// afterwards and is never written to disk.
 // A valid cached sudo ticket (or NOPASSWD) skips the password entirely.
 func RunSetCapsSudo(binary string, password []byte) error {
 	sudo, err := exec.LookPath("sudo")
@@ -502,16 +511,23 @@ func RunSetCapsSudo(binary string, password []byte) error {
 	if err != nil {
 		return fmt.Errorf("setcap not found (install libcap)")
 	}
-	caps := "cap_net_admin,cap_net_raw=ep"
+	sh, err := exec.LookPath("bash")
+	if err != nil {
+		sh, err = exec.LookPath("sh")
+		if err != nil {
+			return fmt.Errorf("sh not found")
+		}
+	}
+	script := GrantScript(setcap, binary)
 	// 1) try without touching the password reader: cached ticket / NOPASSWD
-	if err := exec.Command(sudo, "-n", setcap, caps, binary).Run(); err == nil {
+	if err := exec.Command(sudo, "-n", sh, "-c", script).Run(); err == nil {
 		for i := range password {
 			password[i] = 0
 		}
 		return nil
 	}
 	// 2) feed the password via stdin (-S), empty prompt (-p)
-	cmd := exec.Command(sudo, "-S", "-p", "", setcap, caps, binary)
+	cmd := exec.Command(sudo, "-S", "-p", "", sh, "-c", script)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -541,6 +557,61 @@ func RunSetCapsSudo(binary string, password []byte) error {
 		return fmt.Errorf("%s", firstLine(out.String()))
 	}
 	return nil
+}
+
+// GrantScript builds the admin script executed via sudo: grant the core
+// binary network capabilities and install the resolve1 polkit rule for
+// the current user if it is missing. Both parts are idempotent.
+func GrantScript(setcap, binary string) string {
+	const caps = "cap_net_admin,cap_net_raw=ep"
+	b := "set -e\n" +
+		shQuote(setcap) + " " + caps + " " + shQuote(binary) + "\n"
+	user := os.Getenv("USER")
+	if user == "" {
+		if u, uerr := osuser.Current(); uerr == nil {
+			user = u.Username
+		}
+	}
+	if !validIdent(user) {
+		return b + "echo ratbox-grant-ok\n"
+	}
+	b += "F=/etc/polkit-1/rules.d/49-ratbox-tun-dns.rules\n" +
+		"if [ -d /etc/polkit-1/rules.d ] && { [ ! -f \"$F\" ] || ! grep -q " +
+		shQuote(user) + " \"$F\"; }; then\n" +
+		"cat > \"$F\" <<'RATBOX_RULES'\n" +
+		"polkit.addRule(function(action, subject) {\n" +
+		"  if (action.id.indexOf(\"org.freedesktop.resolve1.\") === 0 &&\n" +
+		"      subject.user === " + strconv.Quote(user) + ") {\n" +
+		"    return polkit.Result.YES;\n" +
+		"  }\n" +
+		"});\n" +
+		"RATBOX_RULES\n" +
+		"chmod 644 \"$F\"\n" +
+		"fi\n" +
+		"echo ratbox-grant-ok\n"
+	return b
+}
+
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func validIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9', r == '-', r == '.', r == '$':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return len(s) <= 32
 }
 
 func firstLine(s string) string {
