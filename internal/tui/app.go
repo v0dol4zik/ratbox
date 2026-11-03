@@ -324,12 +324,6 @@ func (a *App) editSetting(idx int) tea.Cmd {
 	return nil
 }
 
-// commandList is the set of ":" commands known to the autocompleter.
-var commandList = []string{
-	"config", "settings", "cfg", "conf", "set",
-	"q", "quit", "qa", "qall", "w", "save", "h", "help",
-}
-
 // commandMatches returns the commands starting with the typed prefix.
 func commandMatches(prefix string) []string {
 	p := strings.ToLower(strings.TrimSpace(prefix))
@@ -365,34 +359,106 @@ func (a *App) beginCommandInput() {
 	a.cmdMode = true
 }
 
+// command actions; names are resolution targets for the ":" input
+type cmdAction int
+
+const (
+	actNone cmdAction = iota
+	actSettings
+	actQuit
+	actSave
+	actHelp
+)
+
+// commandList is the set of ":" commands known to the autocompleter.
+var commandList = []string{
+	"config", "settings", "cfg", "conf", "set",
+	"q", "quit", "qa", "qall", "w", "save", "h", "help",
+}
+
+func commandAction(name string) cmdAction {
+	switch name {
+	case "config", "settings", "cfg", "conf", "set":
+		return actSettings
+	case "q", "quit", "qa", "qall":
+		return actQuit
+	case "w", "save":
+		return actSave
+	case "h", "help":
+		return actHelp
+	}
+	return actNone
+}
+
+// resolveCommand maps the typed prefix to an action, vim-style: if every
+// matching command leads to the same action, no further typing is needed.
+func resolveCommand(input string) (cmdAction, error) {
+	cmd := strings.ToLower(strings.TrimSpace(input))
+	if cmd == "" {
+		return actNone, nil
+	}
+	// exact name wins instantly
+	act := commandAction(cmd)
+	if act != actNone {
+		return act, nil
+	}
+	var (
+		found   cmdAction
+		shown   string
+		matched bool
+	)
+	for _, name := range commandList {
+		if strings.HasPrefix(name, cmd) {
+			a := commandAction(name)
+			if !matched {
+				found, matched = a, true
+			} else if a != found {
+				return actNone, fmt.Errorf("неоднозначно :%s — уточните: %s", cmd, shown)
+			}
+			if shown == "" {
+				shown = name
+			} else {
+				shown += " " + name
+			}
+		}
+	}
+	if !matched {
+		return actNone, fmt.Errorf("нет команды :%s", cmd)
+	}
+	return found, nil
+}
+
 // runCommand executes a ":" command. Runs inline (from the Update loop),
 // so model mutations here are race-free.
 func (a *App) runCommand(raw string) tea.Cmd {
 	cmd := strings.TrimSpace(strings.ToLower(raw))
-	switch {
-	case cmd == "":
+	act, err := resolveCommand(cmd)
+	if err != nil {
+		a.status, a.statusErr = err.Error(), true
 		return nil
-	case cmd == "config" || cmd == "settings" || cmd == "cfg" || cmd == "conf" || cmd == "set":
+	}
+	switch act {
+	case actNone:
+		return nil
+	case actSettings:
 		a.view = ViewSettings
 		a.setIdx = 0
 		return nil
-	case cmd == "q" || cmd == "quit" || cmd == "qa" || cmd == "qall":
+	case actQuit:
 		_ = a.mgr.Stop()
 		return tea.Quit
-	case cmd == "w" || cmd == "save":
-		if err := a.store.Save(); err != nil {
-			a.status, a.statusErr = "save: "+err.Error(), true
+	case actSave:
+		if saveErr := a.store.Save(); saveErr != nil {
+			a.status, a.statusErr = "save: "+saveErr.Error(), true
 		} else {
 			a.status, a.statusErr = "store saved", false
 		}
 		return nil
-	case cmd == "h" || cmd == "help":
+	case actHelp:
 		a.status, a.statusErr = "команды: config/settings, q (выход), w (сохранить)", false
 		return nil
-	default:
-		a.status, a.statusErr = "неизвестная команда :"+cmd+" — config, settings, q, w", true
-		return nil
 	}
+	return nil
 }
 
 // serviceProxy returns the always-direct subscription channel of a running

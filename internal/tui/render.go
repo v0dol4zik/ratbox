@@ -136,6 +136,21 @@ func (a *App) renderSettings(height int) string {
 	return strings.Join(lines, "\n")
 }
 
+// actionName renders what a command will do, for the live hint.
+func actionName(act cmdAction) string {
+	switch act {
+	case actSettings:
+		return "настройки"
+	case actQuit:
+		return "выход"
+	case actSave:
+		return "сохранить"
+	case actHelp:
+		return "помощь"
+	}
+	return ""
+}
+
 func onOff(b bool) string {
 	if b {
 		return okStyle.Render("on")
@@ -269,10 +284,10 @@ func (a *App) renderFooter() string {
 		}
 		line := fmt.Sprintf("\n %s%s▏", titleStyle.Render(a.inputPrompt), shown)
 		if a.cmdMode && !a.inputMasked && strings.TrimSpace(a.inputBuf) != "" {
-			if m := commandMatches(a.inputBuf); len(m) == 1 {
-				line += " " + okStyle.Render(m[0])
-			} else if len(m) > 1 {
-				line += " " + dimStyle.Render("[Tab] "+strings.Join(m, " "))
+			if act, _ := resolveCommand(a.inputBuf); act != actNone {
+				line += " " + okStyle.Render("→ "+actionName(act))
+			} else if m := commandMatches(a.inputBuf); len(m) > 0 {
+				line += " " + dimStyle.Render(strings.Join(m, " "))
 			}
 		}
 		return line
