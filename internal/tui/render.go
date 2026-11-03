@@ -267,8 +267,15 @@ func (a *App) renderFooter() string {
 		if a.inputMasked {
 			shown = strings.Repeat("*", len([]rune(a.inputBuf)))
 		}
-		return fmt.Sprintf("\n %s%s▏",
-			titleStyle.Render(a.inputPrompt), shown)
+		line := fmt.Sprintf("\n %s%s▏", titleStyle.Render(a.inputPrompt), shown)
+		if a.cmdMode && !a.inputMasked && strings.TrimSpace(a.inputBuf) != "" {
+			if m := commandMatches(a.inputBuf); len(m) == 1 {
+				line += " " + okStyle.Render(m[0])
+			} else if len(m) > 1 {
+				line += " " + dimStyle.Render("[Tab] "+strings.Join(m, " "))
+			}
+		}
+		return line
 	}
 	var keys string
 	switch a.view {

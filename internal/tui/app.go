@@ -324,6 +324,41 @@ func (a *App) editSetting(idx int) tea.Cmd {
 	return nil
 }
 
+// commandList is the set of ":" commands known to the autocompleter.
+var commandList = []string{
+	"config", "settings", "cfg", "conf", "set",
+	"q", "quit", "qa", "qall", "w", "save", "h", "help",
+}
+
+// commandMatches returns the commands starting with the typed prefix.
+func commandMatches(prefix string) []string {
+	p := strings.ToLower(strings.TrimSpace(prefix))
+	if p == "" {
+		return nil
+	}
+	var out []string
+	for _, c := range commandList {
+		if strings.HasPrefix(c, p) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// commonPrefix returns the longest prefix shared by all strings.
+func commonPrefix(list []string) string {
+	if len(list) == 0 {
+		return ""
+	}
+	p := list[0]
+	for _, s := range list[1:] {
+		for !strings.HasPrefix(s, p) && len(p) > 0 {
+			p = p[:len(p)-1]
+		}
+	}
+	return p
+}
+
 // beginCommandInput opens the ":" command line, vim-style.
 func (a *App) beginCommandInput() {
 	a.beginInput(":", nil)
@@ -669,6 +704,14 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.inputBuf) > 0 {
 				rs := []rune(a.inputBuf)
 				a.inputBuf = string(rs[:len(rs)-1])
+			}
+			return a, nil
+		case tea.KeyTab:
+			// complete the command to the longest common prefix of matches
+			if a.cmdMode {
+				if m := commandMatches(a.inputBuf); len(m) > 0 {
+					a.inputBuf = commonPrefix(m)
+				}
 			}
 			return a, nil
 		default:
