@@ -39,11 +39,17 @@ type App struct {
 	subIdx    int
 	logOffset int
 
-	running  bool
-	latency  map[string]int
-	traffic  clash.Traffic
-	rateDown int64
-	rateUp   int64
+	running bool
+	latency map[string]int
+	// sweep bookkeeping for the latency summary status
+	dSem      chan struct{} // caps concurrent delay tests at 5
+	testTotal int
+	testDone  int
+	testOk    int
+	testErr   string
+	traffic   clash.Traffic
+	rateDown  int64
+	rateUp    int64
 
 	status    string
 	statusErr bool
@@ -67,6 +73,7 @@ func New(st *store.Store, mgr *process.Manager) *App {
 		store:   st,
 		mgr:     mgr,
 		latency: make(map[string]int),
+		dSem:    make(chan struct{}, 5),
 	}
 }
 
@@ -463,6 +470,20 @@ func (a *App) runCommand(raw string) tea.Cmd {
 	return nil
 }
 
+// errShort strips the node tag prefix the clash client prepends and the
+// url noise, leaving the actionable part of the error.
+func errShort(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, ": "); i >= 0 {
+		msg = msg[i+2:]
+	}
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	if len(msg) > 90 {
+		msg = msg[:87] + "…"
+	}
+	return msg
+}
+
 // normKey lower-cases a single ASCII letter so hotkeys survive Caps Lock
 // being on: the terminal gives us "S" and the app wants "s". The two keys
 // where case IS the meaning ("g"/"G" — list top/end, and the legacy "T"
@@ -613,6 +634,12 @@ func delayCmd(app *App, tag string) tea.Cmd {
 		if app.client == nil {
 			return delayMsg{tag: tag, err: fmt.Errorf("core is not running")}
 		}
+		// at most 5 probes in flight: a full-strength volley trips over
+		// wifi aps and ISP rate-limits and paints every node dead
+		if app.dSem != nil {
+			app.dSem <- struct{}{}
+			defer func() { <-app.dSem }()
+		}
 		ms, err := app.client.Delay(tag, 5*time.Second, clash.DefaultTestURL)
 		return delayMsg{tag: tag, ms: ms, err: err}
 	}
@@ -751,8 +778,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case delayMsg:
 		if m.err != nil {
 			a.latency[m.tag] = -1
+			if a.testErr == "" {
+				a.testErr = m.err.Error() // first failure carries the cause
+			}
 		} else {
 			a.latency[m.tag] = m.ms
+			a.testOk++
+		}
+		a.testDone++
+		if a.testDone >= a.testTotal {
+			if a.testTotal == 1 {
+				if m.err != nil {
+					a.status, a.statusErr = m.tag+": "+errShort(m.err), true
+				} else {
+					a.status, a.statusErr = fmt.Sprintf("%s: %d ms", m.tag, m.ms), false
+				}
+			} else if a.testOk == 0 && a.testErr != "" {
+				// everything failed: the first error tells why
+				a.status, a.statusErr = "all "+fmt.Sprint(a.testTotal)+" nodes failed: "+errShort(errors.New(a.testErr)), true
+			} else {
+				a.status, a.statusErr = fmt.Sprintf("tested %d: %d alive, %d dead", a.testTotal, a.testOk, a.testTotal-a.testOk), false
+			}
 		}
 		return a, nil
 
@@ -942,8 +988,15 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
+			if a.client == nil {
+				// tests go through the core; pretend nothing instead of
+				// painting every node dead with instant crosses
+				a.status, a.statusErr = "core is not running — press s to start it, then test", true
+				return a, nil
+			}
 			n := a.store.Nodes[a.nodeIdx]
 			a.status = "testing " + n.Tag + "…"
+			a.testTotal, a.testDone, a.testOk, a.testErr = 1, 0, 0, ""
 			return a, delayCmd(a, n.Tag)
 		case "a", "T":
 			// "a" = test ALL without reaching for shift; "T" kept for
@@ -951,7 +1004,12 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
+			if a.client == nil {
+				a.status, a.statusErr = "core is not running — press s to start it, then test", true
+				return a, nil
+			}
 			a.status = "testing all nodes…"
+			a.testTotal, a.testDone, a.testOk, a.testErr = len(a.store.Nodes), 0, 0, ""
 			var cmds []tea.Cmd
 			for _, n := range a.store.Nodes {
 				cmds = append(cmds, delayCmd(a, n.Tag))
