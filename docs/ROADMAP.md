@@ -43,6 +43,22 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.5 "The tun that started and froze"
+
+- [x] root cause of "tun core runs but 0 traffic, mixed/clash api dead":
+        sing-box 1.14 tun defaults to dns_mode=hijack and calls
+        systemd-resolved over D-Bus; as a user process it blocks on
+        polkit authorization (pkttyagent prompt lands on our tty, nobody
+        answers) — the core starts, then freezes answering nothing.
+        Fixed by generating dns_mode "disabled": no resolve1 calls,
+        no prompts, nothing to hang on. Verified live: clash api
+        answers, outward curl exits with the node IP, traffic counter
+        turns. Remaining [detached] ip rules are old crash leftovers and
+        are harmless (auto_route re-claims the slots)
+- [x] the polkit-rule branch of the sudo grant dropped (no longer needed);
+        x in settings stays as a re-grant of the core caps
+- [x] latency column colorized: <=150ms green, <=300ms yellow, worse red
+
 ## v0.6.4 "The polkit interrogation of systemd-resolved"
 
 - [x] live -race build caught the second one: isRunning() read

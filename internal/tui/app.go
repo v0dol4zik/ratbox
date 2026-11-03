@@ -1244,15 +1244,14 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter", " ", "m", "y", "p":
 			return a, a.applySetting(a.setIdx)
 		case "x":
-			// re-run the one-time grant: caps for the core binary plus
-			// the polkit rule that stops resolve1 from demanding a
-			// password on every TUN start (sing-box 1.14 DNS hijack)
+			// re-run the one-time tun caps grant for the core binary
+			// (needed after a sing-box upgrade or path change)
 			bin, err := process.ResolveBinaryPath("")
 			if err != nil {
 				a.status, a.statusErr = err.Error(), true
 				return a, nil
 			}
-			a.beginPasswordInput("sudo password (tun caps + dns policy, esc to cancel): ", func(pw string) tea.Cmd {
+			a.beginPasswordInput("sudo password (tun caps, esc to cancel): ", func(pw string) tea.Cmd {
 				return a.sudoSetcapCmd(pw, bin)
 			})
 		case "esc":

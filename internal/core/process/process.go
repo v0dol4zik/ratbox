@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	osuser "os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -369,6 +368,13 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 	route["default_domain_resolver"] = "dns-local"
 
 	if tun {
+		// dns_mode "disabled": with auto_route the default is "hijack", which
+		// makes sing-box configure systemd-resolved over D-Bus. As a regular
+		// user process it hangs waiting for polkit authorization (no desktop
+		// agent -> pkttyagent on our tty, nobody can answer) — the core
+		// starts, then freezes answering nothing: 0-byte traffic, clash api
+		// timeouts, "core died" on every stop. Disabled = no resolve1 calls
+		// at all; the system resolver keeps working through the LAN router.
 		inbounds = append([]map[string]any{{
 			"type":         "tun",
 			"tag":          "tun-in",
@@ -376,6 +382,7 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 			"mtu":          9000,
 			"auto_route":   true,
 			"strict_route": true,
+			"dns_mode":     "disabled",
 		}}, inbounds...)
 		rules = append(rules, map[string]any{"protocol": "dns", "action": "hijack-dns"})
 		// dns through the tunnel to protect from poisoning;
@@ -494,13 +501,9 @@ func killOrphanCores(dataDir string, mixedPort int) {
 }
 
 // RunSetCapsSudo grants CAP_NET_ADMIN/CAP_NET_RAW to the core binary with
-// a sudo password supplied by the user, and installs (idempotently) a
-// polkit rule letting the current user configure systemd-resolved link
-// DNS without a password prompt. Without that rule every TUN start pulls
-// "Authentication is required to set domains" straight onto our tty —
-// sing-box 1.14 enables DNS hijack through systemd-resolved on Linux.
-// The password goes directly into the sudo stdin pipe, is zeroized
-// afterwards and is never written to disk.
+// a sudo password supplied by the user. The password goes directly into
+// the sudo stdin pipe, is zeroized afterwards and is never written to
+// disk.
 // A valid cached sudo ticket (or NOPASSWD) skips the password entirely.
 func RunSetCapsSudo(binary string, password []byte) error {
 	sudo, err := exec.LookPath("sudo")
@@ -560,58 +563,16 @@ func RunSetCapsSudo(binary string, password []byte) error {
 }
 
 // GrantScript builds the admin script executed via sudo: grant the core
-// binary network capabilities and install the resolve1 polkit rule for
-// the current user if it is missing. Both parts are idempotent.
+// binary network capabilities. Idempotent.
 func GrantScript(setcap, binary string) string {
 	const caps = "cap_net_admin,cap_net_raw=ep"
-	b := "set -e\n" +
-		shQuote(setcap) + " " + caps + " " + shQuote(binary) + "\n"
-	user := os.Getenv("USER")
-	if user == "" {
-		if u, uerr := osuser.Current(); uerr == nil {
-			user = u.Username
-		}
-	}
-	if !validIdent(user) {
-		return b + "echo ratbox-grant-ok\n"
-	}
-	b += "F=/etc/polkit-1/rules.d/49-ratbox-tun-dns.rules\n" +
-		"if [ -d /etc/polkit-1/rules.d ] && { [ ! -f \"$F\" ] || ! grep -q " +
-		shQuote(user) + " \"$F\"; }; then\n" +
-		"cat > \"$F\" <<'RATBOX_RULES'\n" +
-		"polkit.addRule(function(action, subject) {\n" +
-		"  if (action.id.indexOf(\"org.freedesktop.resolve1.\") === 0 &&\n" +
-		"      subject.user === " + strconv.Quote(user) + ") {\n" +
-		"    return polkit.Result.YES;\n" +
-		"  }\n" +
-		"});\n" +
-		"RATBOX_RULES\n" +
-		"chmod 644 \"$F\"\n" +
-		"fi\n" +
+	return "set -e\n" +
+		shQuote(setcap) + " " + caps + " " + shQuote(binary) + "\n" +
 		"echo ratbox-grant-ok\n"
-	return b
 }
 
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-func validIdent(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
-		case r >= '0' && r <= '9', r == '-', r == '.', r == '$':
-			if i == 0 {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return len(s) <= 32
 }
 
 func firstLine(s string) string {

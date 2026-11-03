@@ -180,33 +180,30 @@ func (a *App) renderNodes(height int) string {
 		if i == a.nodeIdx {
 			style = selectedStyle
 		}
-		lat := "    —"
+		lat, latSt := "    —", dimStyle
 		if ms, ok := a.latency[n.Tag]; ok {
 			if ms < 0 {
-				lat = "    ✗"
+				lat, latSt = "    ✗", errStyle // dead node
 			} else {
 				lat = fmt.Sprintf("%4d ms", ms)
+				switch {
+				case ms <= 150:
+					latSt = okStyle // good
+				case ms <= 300:
+					latSt = warnStyle // mediocre
+				default:
+					latSt = errStyle // bad
+				}
 			}
 		}
 		row := marker + " " +
 			padRight(style.Render(TruncateVisible(name, nameW-2)), nameW) +
 			" " + padRight(n.Type(), protoW) +
 			" " + padRight(n.Addr(), addrW) +
-			" " + latStyle(lat)
+			" " + latSt.Render(lat)
 		lines = append(lines, row)
 	}
 	return strings.Join(lines, "\n")
-}
-
-func latStyle(s string) string {
-	switch {
-	case strings.Contains(s, "✗"):
-		return errStyle.Render(s)
-	case s == "    —":
-		return dimStyle.Render(s)
-	default:
-		return okStyle.Render(s)
-	}
 }
 
 func (a *App) renderSubs(height int) string {
@@ -294,7 +291,7 @@ func (a *App) renderFooter() string {
 	case ViewLogs:
 		keys = "j/k,g/G scroll · s start/stop"
 	case ViewSettings:
-		keys = "↑↓ select · enter/space apply · x fix tun+dns (sudo) · esc back"
+		keys = "↑↓ select · enter/space apply · x fix tun caps (sudo) · esc back"
 	}
 	keys += " · ←→ tabs · q quit"
 	var status string
