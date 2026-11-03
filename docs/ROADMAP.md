@@ -43,6 +43,21 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.8 "Detect traffic interception, not just routing-table ownership"
+
+- [x] host comparison: same endpoint via ratbox mixed used the selected Poland
+        exit; system/TUN request used a Finland exit and added no ratbox traffic
+        while ThroneCore was running. Kernel route alone was a false positive
+- [x] bounded asynchronous TUN ingress probe: hold a partial HTTP request open,
+        match source port/destination and tun/tun-in in this core's connections
+- [x] persistent header state: tun checking / tun ingress ok / tun unverified;
+        failures warn but never block startup or stop another client
+- [x] namespace regression proves probe success on an isolated TUN data path;
+        host diagnostic detects missing ingress and compares mixed/TUN timings
+- [x] context-aware Clash connection requests, deadline and stale-message tests
+- [ ] validate throughput on the host without external packet interception;
+        ingress success does not establish node health, speed, DNS or UDP support
+
 ## v0.6.7 "Remove false TUN blocking; prove the data path"
 
 - [x] remove blanket refusal when any TUN exists: persistent/disconnected

@@ -109,7 +109,7 @@ func serveNamespaceProxy(t *testing.T) {
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 			br := bufio.NewReader(c)
 			req, err := http.ReadRequest(br)
-			if err != nil || req.Method != "CONNECT" || (req.Host != "198.19.0.2:18080" && req.Host != "[2001:db8::2]:18080") {
+			if err != nil || req.Method != "CONNECT" || (req.Host != "198.19.0.2:18080" && req.Host != "[2001:db8::2]:18080" && req.Host != "1.1.1.1:80") {
 				return
 			}
 			_, _ = io.WriteString(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -158,6 +158,12 @@ func testNamespaceClient(t *testing.T) {
 	}
 	if diagnostic := mgr.TUNRouteDiagnostic(); !strings.Contains(diagnostic, "via "+TunName) {
 		t.Fatal(diagnostic)
+	}
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 3*time.Second)
+	probeErr := VerifyTUNIngress(probeCtx, api)
+	cancelProbe()
+	if probeErr != nil {
+		t.Fatal("ingress probe:", probeErr)
 	}
 	tr := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	defer tr.CloseIdleConnections()

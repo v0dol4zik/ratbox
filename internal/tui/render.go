@@ -56,7 +56,18 @@ func (a *App) renderHeader() string {
 		dimStyle.Render(fmt.Sprintf("proxy 127.0.0.1:%d", a.store.MixedPort)),
 	}
 	if a.store.TunMode {
-		parts = append(parts, warnStyle.Render("tun"))
+		tun := warnStyle.Render("tun")
+		if a.running {
+			switch a.tunIngress {
+			case "checking":
+				tun = warnStyle.Render("tun checking")
+			case "verified":
+				tun = okStyle.Render("tun ingress ok")
+			case "warning":
+				tun = errStyle.Render("tun unverified")
+			}
+		}
+		parts = append(parts, tun)
 	}
 	if a.store.AutoMode {
 		parts = append(parts, okStyle.Render("auto"))

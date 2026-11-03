@@ -4,6 +4,7 @@ package clash
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,11 +30,15 @@ func New(baseURL, secret string) *Client {
 }
 
 func (c *Client) do(method, path string, body []byte) ([]byte, error) {
+	return c.doContext(context.Background(), method, path, body)
+}
+
+func (c *Client) doContext(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, c.baseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +118,31 @@ func (c *Client) Delay(node string, timeout time.Duration, testURL string) (int,
 	return res.Delay, nil
 }
 
-// Traffic holds counters from /connections.
+// Connection identifies a live connection and the inbound that received it.
+type Connection struct {
+	Metadata struct {
+		Type            string `json:"type"`
+		SourcePort      string `json:"sourcePort"`
+		DestinationIP   string `json:"destinationIP"`
+		DestinationPort string `json:"destinationPort"`
+	} `json:"metadata"`
+}
+
+func (c *Client) Connections(ctx context.Context) ([]Connection, error) {
+	data, err := c.doContext(ctx, http.MethodGet, "/connections", nil)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Connections []Connection `json:"connections"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result.Connections, nil
+}
+
+// Traffic holds cumulative counters from /connections, including closed connections.
 type Traffic struct {
 	DownloadTotal int64 `json:"downloadTotal"`
 	UploadTotal   int64 `json:"uploadTotal"`

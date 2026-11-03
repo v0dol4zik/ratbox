@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -33,6 +34,24 @@ func TestStaleTrafficTickIgnored(t *testing.T) {
 	_, cmd := a.Update(trafficTickMsg{epoch: 1, traffic: clash.Traffic{DownloadTotal: 99999}})
 	if cmd != nil || a.traffic.DownloadTotal != 1000 {
 		t.Fatal("stale tick updated traffic or scheduled another timer")
+	}
+}
+
+func TestTUNIngressMessages(t *testing.T) {
+	a := New(&store.Store{}, process.NewManager(process.Config{}))
+	a.running, a.trafficEpoch = true, 2
+	a.tunIngress = "checking"
+	a.Update(tunIngressMsg{epoch: 1, err: errors.New("old failure")})
+	if a.tunIngress != "checking" {
+		t.Fatal("stale probe changed state")
+	}
+	a.Update(tunIngressMsg{epoch: 2, err: errors.New("probe missing")})
+	if a.tunIngress != "warning" || !a.statusErr {
+		t.Fatal("missing warning")
+	}
+	a.Update(tunIngressMsg{epoch: 2})
+	if a.tunIngress != "verified" {
+		t.Fatal("missing verified state")
 	}
 }
 

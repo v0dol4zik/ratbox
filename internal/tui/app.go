@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -40,9 +41,10 @@ type App struct {
 	subIdx    int
 	logOffset int
 
-	running  bool
-	starting bool // a Start is in flight; a second s must not kill it
-	latency  map[string]int
+	tunIngress string // empty, checking, verified, warning; independent of core liveness
+	running    bool
+	starting   bool // a Start is in flight; a second s must not kill it
+	latency    map[string]int
 	// sweep bookkeeping for the latency summary status
 	dSem         chan struct{} // caps concurrent delay tests at 5
 	testTotal    int
@@ -141,6 +143,19 @@ type opDoneMsg struct {
 // needSudoPromptMsg asks the user for the sudo password inside the TUI.
 type needSudoPromptMsg struct {
 	binary string
+}
+
+type tunIngressMsg struct {
+	epoch uint64
+	err   error
+}
+
+func tunIngressCmd(api *clash.Client, epoch uint64) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		return tunIngressMsg{epoch: epoch, err: process.VerifyTUNIngress(ctx, api)}
+	}
 }
 
 type coreStateMsg struct {
@@ -756,6 +771,7 @@ func (a *App) tunnelNodeCount() int {
 
 func (a *App) resetClient() {
 	a.trafficEpoch++
+	a.tunIngress = ""
 	a.rateUp, a.rateDown = 0, 0
 	a.traffic = clash.Traffic{}
 	a.trafficAt = time.Now()
@@ -849,6 +865,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		return a, nil
 
+	case tunIngressMsg:
+		if m.epoch != a.trafficEpoch || !a.running {
+			return a, nil
+		}
+		if m.err != nil {
+			a.tunIngress = "warning"
+			a.mgr.LogDiagnostic(m.err.Error())
+			a.status, a.statusErr = m.err.Error(), true
+		} else {
+			a.tunIngress = "verified"
+			a.mgr.LogDiagnostic("TUN ingress verified: probe reached this core (node speed not tested)")
+		}
+		return a, nil
+
 	case coreStateMsg:
 		a.starting = false
 		if m.err != nil {
@@ -865,6 +895,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.status, a.statusErr = m.text, true
 			}
 			cmds := []tea.Cmd{trafficTickCmd(a)}
+			if a.store.TunMode {
+				a.tunIngress = "checking"
+				cmds = append(cmds, tunIngressCmd(a.client, a.trafficEpoch))
+			}
 			// no node selected and no auto mode: the selector would fall
 			// back to the first (often dead) node — under tun that kills
 			// the whole system connectivity; bootstrap to the fastest node

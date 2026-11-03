@@ -2,8 +2,10 @@ package process
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +80,12 @@ func TestLiveTUN(t *testing.T) {
 		s, e := api.Traffic()
 		t.Logf("API totals %+v (%v)", s, e)
 	}
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	probeErr := VerifyTUNIngress(probeCtx, api)
+	probeCancel()
+	if probeErr != nil {
+		t.Errorf("ingress: %v", probeErr)
+	}
 	stats()
 	before, err := api.Traffic()
 	if err != nil {
@@ -86,7 +94,22 @@ func TestLiveTUN(t *testing.T) {
 	tr := &http.Transport{Proxy: nil, DisableKeepAlives: true}
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", mgr.cfg.MixedPort))
+	proxyTransport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true}
+	defer proxyTransport.CloseIdleConnections()
+	proxyClient := &http.Client{Transport: proxyTransport, Timeout: 10 * time.Second}
 	for _, u := range []string{"http://1.1.1.1/cdn-cgi/trace", "https://www.gstatic.com/generate_204"} {
+		start := time.Now()
+		pr, pe := proxyClient.Get(u)
+		if pe != nil {
+			t.Logf("mixed %s: %v after %v", u, pe, time.Since(start))
+		} else {
+			body, readErr := io.ReadAll(io.LimitReader(pr.Body, 4096))
+			pr.Body.Close()
+			t.Logf("mixed %s: HTTP %d in %v, body=%s err=%v", u, pr.StatusCode, time.Since(start), body, readErr)
+		}
+		before, _ = api.Traffic()
+		start = time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
 		resp, err := hc.Do(req)
@@ -98,13 +121,14 @@ func TestLiveTUN(t *testing.T) {
 			t.Logf("%s: %d body=%s err=%v", u, resp.StatusCode, b, e)
 		}
 		cancel()
+		t.Logf("TUN elapsed: %v", time.Since(start))
 		stats()
-	}
-	after, err := api.Traffic()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.DownloadTotal <= before.DownloadTotal {
-		t.Fatalf("requests did not register in this core: before=%+v after=%+v; another client may be intercepting traffic", before, after)
+		after, err := api.Traffic()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.DownloadTotal <= before.DownloadTotal {
+			t.Errorf("TUN request did not register in this core: before=%+v after=%+v; another client may be intercepting traffic", before, after)
+		}
 	}
 }
