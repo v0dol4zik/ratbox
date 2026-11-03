@@ -84,6 +84,7 @@ type coreStateMsg struct {
 	running bool
 	text    string
 	err     error
+	tunPerm bool // failed with missing CAP_NET_ADMIN (fixable via polkit)
 }
 
 // ---------------------------------------------------------------------------
@@ -100,53 +101,82 @@ func (a *App) Init() tea.Cmd {
 
 func (a *App) startCoreCmd() tea.Cmd {
 	return func() tea.Msg {
-		if a.mgr.Running() {
-			if err := a.mgr.Stop(); err != nil {
-				return coreStateMsg{false, "", err}
+		for attempt := 0; ; attempt++ {
+			msg := a.tryStartCore()
+			cm, ok := msg.(coreStateMsg)
+			if ok && cm.running {
+				return msg
 			}
-		}
-		var activeTag string
-		if n := a.store.Node(a.store.ActiveNodeID); n != nil {
-			activeTag = n.Tag
-		}
-		if err := a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag, a.store.TunMode); err != nil {
-			return coreStateMsg{false, "", err}
-		}
-		c := clash.New(a.mgr.Controller(), a.mgr.Secret())
-		// wait until the clash api is up (max ~5s)
-		var ok bool
-		for i := 0; i < 50; i++ {
-			if _, err := c.Version(); err == nil {
-				ok = true
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		if !ok {
-			hint := ""
-			for _, l := range a.mgr.Logs() {
-				if strings.Contains(l, "operation not permitted") {
-					hint = "tun требует прав: sudo setcap 'cap_net_admin,cap_net_raw=ep' ~/.local/bin/sing-box"
-					break
+			// first failed attempt with a tun permission problem:
+			// try to fix it via polkit (one-time password dialog) and retry
+			if ok && cm.tunPerm && attempt == 0 {
+				bin, binErr := process.ResolveBinaryPath(a.store.CoreBinary)
+				if binErr != nil {
+					bin = "sing-box"
 				}
+				if err := process.SetCapsPKExec(bin); err != nil {
+					cm.tunPerm = false
+					cm.err = fmt.Errorf("tun: %w\nвручную: sudo setcap 'cap_net_admin,cap_net_raw=ep' %s", err, bin)
+					return cm
+				}
+				continue
 			}
-			if hint == "" {
-				hint = "clash api not responding, смотри логи (3)"
-			}
-			_ = a.mgr.Stop()
-			return coreStateMsg{false, "", errors.New(hint)}
+			return msg
 		}
-		if activeTag != "" {
-			_ = c.Select(process.SelectorTag, activeTag)
-		}
-		return coreStateMsg{true, "", nil}
 	}
+}
+
+// tryStartCore performs a single start attempt and classifies failures.
+func (a *App) tryStartCore() tea.Msg {
+	if a.mgr.Running() {
+		if err := a.mgr.Stop(); err != nil {
+			return coreStateMsg{false, "", err, false}
+		}
+	}
+	var activeTag string
+	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
+		activeTag = n.Tag
+	}
+	if err := a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag, a.store.TunMode); err != nil {
+		return coreStateMsg{false, "", err, false}
+	}
+	c := clash.New(a.mgr.Controller(), a.mgr.Secret())
+	// wait until the clash api is up (max ~5s)
+	var ok bool
+	for i := 0; i < 50; i++ {
+		if _, err := c.Version(); err == nil {
+			ok = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !ok {
+		_ = a.mgr.Stop()
+		if a.store.TunMode && a.coreDiedOnPerm() {
+			return coreStateMsg{false, "", errors.New("недостаточно прав для tun (CAP_NET_ADMIN)"), true}
+		}
+		return coreStateMsg{false, "", errors.New("clash api not responding, смотри логи (3)"), false}
+	}
+	if activeTag != "" {
+		_ = c.Select(process.SelectorTag, activeTag)
+	}
+	return coreStateMsg{true, "", nil, false}
+}
+
+// coreDiedOnPerm reports whether the core died because of missing capabilities.
+func (a *App) coreDiedOnPerm() bool {
+	for _, l := range a.mgr.Logs() {
+		if strings.Contains(l, "operation not permitted") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) stopCoreCmd() tea.Cmd {
 	return func() tea.Msg {
 		err := a.mgr.Stop()
-		return coreStateMsg{false, "", err}
+		return coreStateMsg{false, "", err, false}
 	}
 }
 
