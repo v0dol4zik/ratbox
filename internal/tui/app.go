@@ -20,6 +20,7 @@ const (
 	ViewNodes = iota
 	ViewSubs
 	ViewLogs
+	ViewSettings
 )
 
 const refreshInterval = time.Second
@@ -54,8 +55,10 @@ type App struct {
 
 	autoNow string
 
+	setIdx       int // settings cursor
 	sudoAttempts int
 	sudoBin      string
+	cmdMode      bool // ":" command line
 }
 
 func New(st *store.Store, mgr *process.Manager) *App {
@@ -172,6 +175,189 @@ func (a *App) tryStartCore() tea.Msg {
 		_ = c.Select(process.SelectorTag, opts.ActiveTag)
 	}
 	return coreStateMsg{true, "", nil, false}
+}
+
+// toggleTun flips the tun mode (restarts the core when running).
+func (a *App) toggleTun() tea.Cmd {
+	a.store.TunMode = !a.store.TunMode
+	_ = a.store.Save()
+	state := "off"
+	if a.store.TunMode {
+		state = "on"
+	}
+	if a.mgr.Running() {
+		a.status = "tun " + state + " — перезапуск ядра…"
+		return a.startCoreCmd()
+	}
+	a.status, a.statusErr = "tun "+state+" (применится при старте)", false
+	return nil
+}
+
+// toggleAuto flips the urltest "auto" group as the selector target.
+func (a *App) toggleAuto() tea.Cmd {
+	a.store.AutoMode = !a.store.AutoMode
+	_ = a.store.Save()
+	a.autoNow = ""
+	state := "off"
+	if a.store.AutoMode {
+		state = "on"
+	}
+	if a.mgr.Running() {
+		a.status = "auto " + state + " — перезапуск ядра…"
+		return a.startCoreCmd()
+	}
+	a.status, a.statusErr = "auto "+state+" (применится при старте)", false
+	return nil
+}
+
+// cycleProfile switches the routing profile: global -> RU bypass.
+func (a *App) cycleProfile() tea.Cmd {
+	a.store.RoutingProfile++
+	if a.store.RoutingProfile > process.ProfileRUBypass {
+		a.store.RoutingProfile = process.ProfileGlobal
+	}
+	_ = a.store.Save()
+	return a.applyProfileStatus()
+}
+
+func (a *App) applyProfileStatus() tea.Cmd {
+	name := "global"
+	if a.store.RoutingProfile == process.ProfileRUBypass {
+		name = "RU→direct"
+	}
+	if a.mgr.Running() {
+		a.status = "маршрутизация " + name + " — перезапуск ядра…"
+		return a.startCoreCmd()
+	}
+	a.status, a.statusErr = "маршрутизация "+name+" (применится при старте)", false
+	return nil
+}
+
+// toggleAutostart flips the startup core launch (applies at next start).
+func (a *App) toggleAutostart() tea.Cmd {
+	a.store.AutoStart = !a.store.AutoStart
+	_ = a.store.Save()
+	state := "off"
+	if a.store.AutoStart {
+		state = "on"
+	}
+	a.status, a.statusErr = "autostart "+state, false
+	return nil
+}
+
+// settingsRowCount из render: порядок строк должен совпадать с applySetting.
+const (
+	setTun = iota
+	setAuto
+	setProfile
+	setAutostart
+	setMixedPort
+	setCoreBinary
+	settingsRows
+)
+
+// applySetting toggles the setting at the given row index.
+func (a *App) applySetting(idx int) tea.Cmd {
+	switch idx {
+	case setTun:
+		return a.toggleTun()
+	case setAuto:
+		return a.toggleAuto()
+	case setProfile:
+		return a.cycleProfile()
+	case setAutostart:
+		return a.toggleAutostart()
+	case setMixedPort:
+		return a.editSetting(setMixedPort)
+	case setCoreBinary:
+		return a.editSetting(setCoreBinary)
+	}
+	return nil
+}
+
+// editSetting opens an input for the value-editable settings.
+func (a *App) editSetting(idx int) tea.Cmd {
+	switch idx {
+	case setMixedPort:
+		a.beginInput(fmt.Sprintf("mixed port [%d]: ", a.store.MixedPort), func(s string) tea.Cmd {
+			port, err := strconv.Atoi(strings.TrimSpace(s))
+			if err != nil || port < 1 || port > 65535 {
+				return func() tea.Msg {
+					return opDoneMsg{text: "порт: нужно целое 1-65535", err: fmt.Errorf("%q", s)}
+				}
+			}
+			if port == a.store.MixedPort {
+				return func() tea.Msg { return opDoneMsg{text: "порт не изменился", err: nil} }
+			}
+			a.store.MixedPort = port
+			_ = a.store.Save()
+			if a.mgr.Running() {
+				a.status = fmt.Sprintf("порт %d — перезапуск ядра…", port)
+				return a.startCoreCmd()
+			}
+			return func() tea.Msg {
+				return opDoneMsg{text: fmt.Sprintf("mixed port %d (применится при старте)", port), err: nil}
+			}
+		})
+	case setCoreBinary:
+		cur := a.store.CoreBinary
+		if cur == "" {
+			cur = "(авто: поиск sing-box в PATH)"
+		}
+		a.beginInput(fmt.Sprintf("core binary [%s]: ", cur), func(s string) tea.Cmd {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				if _, err := process.ResolveBinaryPath(s); err != nil {
+					return func() tea.Msg { return opDoneMsg{text: "бинарь не найден", err: err} }
+				}
+			}
+			_ = a.store.Save()
+			a.store.CoreBinary = s
+			_ = a.store.Save()
+			if a.mgr.Running() {
+				a.status = "core binary — перезапуск ядра…"
+				return a.startCoreCmd()
+			}
+			return func() tea.Msg { return opDoneMsg{text: "core binary обновлён", err: nil} }
+		})
+	}
+	return nil
+}
+
+// beginCommandInput opens the ":" command line, vim-style.
+func (a *App) beginCommandInput() {
+	a.beginInput(":", nil)
+	a.cmdMode = true
+}
+
+// runCommand executes a ":" command. Runs inline (from the Update loop),
+// so model mutations here are race-free.
+func (a *App) runCommand(raw string) tea.Cmd {
+	cmd := strings.TrimSpace(strings.ToLower(raw))
+	switch {
+	case cmd == "":
+		return nil
+	case cmd == "config" || cmd == "settings" || cmd == "cfg" || cmd == "conf" || cmd == "set":
+		a.view = ViewSettings
+		a.setIdx = 0
+		return nil
+	case cmd == "q" || cmd == "quit" || cmd == "qa" || cmd == "qall":
+		_ = a.mgr.Stop()
+		return tea.Quit
+	case cmd == "w" || cmd == "save":
+		if err := a.store.Save(); err != nil {
+			a.status, a.statusErr = "save: "+err.Error(), true
+		} else {
+			a.status, a.statusErr = "store saved", false
+		}
+		return nil
+	case cmd == "h" || cmd == "help":
+		a.status, a.statusErr = "команды: config/settings, q (выход), w (сохранить)", false
+		return nil
+	default:
+		a.status, a.statusErr = "неизвестная команда :"+cmd+" — config, settings, q, w", true
+		return nil
+	}
 }
 
 // serviceProxy returns the always-direct subscription channel of a running
@@ -468,6 +654,10 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			raw := a.inputBuf
 			a.inputActive = false
 			a.inputBuf = "" // drop the secret from memory asap
+			if a.cmdMode {
+				a.cmdMode = false
+				return a, a.runCommand(raw)
+			}
 			cmd := a.inputSubmit(raw)
 			a.inputSubmit = nil
 			return a, cmd
@@ -502,51 +692,20 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "3":
 		a.view = ViewLogs
 		return a, nil
+	case "4":
+		a.view = ViewSettings
+		return a, nil
 	case "tab":
-		a.view = (a.view + 1) % 3
+		a.view = (a.view + 1) % 4
 		return a, nil
 	case "m":
-		a.store.TunMode = !a.store.TunMode
-		_ = a.store.Save()
-		state := "off"
-		if a.store.TunMode {
-			state = "on"
-		}
-		if a.mgr.Running() {
-			a.status = "tun " + state + " — перезапуск ядра…"
-			return a, a.startCoreCmd()
-		}
-		a.status, a.statusErr = "tun "+state+" (применится при старте)", false
+		return a, a.toggleTun()
 	case "y":
-		// toggles the urltest "auto" group as the selector target
-		a.store.AutoMode = !a.store.AutoMode
-		_ = a.store.Save()
-		a.autoNow = ""
-		state := "off"
-		if a.store.AutoMode {
-			state = "on"
-		}
-		if a.mgr.Running() {
-			a.status = "auto " + state + " — перезапуск ядра…"
-			return a, a.startCoreCmd()
-		}
-		a.status, a.statusErr = "auto "+state+" (применится при старте)", false
+		return a, a.toggleAuto()
 	case "p":
-		// cycles the routing profile: global -> RU bypass
-		a.store.RoutingProfile++
-		if a.store.RoutingProfile > process.ProfileRUBypass {
-			a.store.RoutingProfile = process.ProfileGlobal
-		}
-		_ = a.store.Save()
-		name := "global"
-		if a.store.RoutingProfile == process.ProfileRUBypass {
-			name = "RU→direct"
-		}
-		if a.mgr.Running() {
-			a.status = "маршрутизация " + name + " — перезапуск ядра…"
-			return a, a.startCoreCmd()
-		}
-		a.status, a.statusErr = "маршрутизация "+name+" (применится при старте)", false
+		return a, a.cycleProfile()
+	case ":":
+		a.beginCommandInput()
 	case "s":
 		if a.mgr.Running() {
 			return a, a.stopCoreCmd()
@@ -654,6 +813,23 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.nodeIdx = 0
 			a.restartIfRunning()
 			a.status = "removed sub " + s.Name
+		}
+	case ViewSettings:
+		switch k.String() {
+		case "up", "k":
+			if a.setIdx > 0 {
+				a.setIdx--
+			}
+		case "down", "j":
+			if a.setIdx < settingsRows-1 {
+				a.setIdx++
+			}
+		case "enter", " ", "m", "y", "p":
+			return a, a.applySetting(a.setIdx)
+		case "e":
+			return a, a.editSetting(a.setIdx)
+		case "esc":
+			a.view = ViewNodes
 		}
 	case ViewLogs:
 		lines := a.mgr.Logs()

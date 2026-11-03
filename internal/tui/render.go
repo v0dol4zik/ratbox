@@ -26,6 +26,8 @@ func (a *App) View() string {
 		b.WriteString(a.renderSubs(bodyHeight))
 	case ViewLogs:
 		b.WriteString(a.renderLogs(bodyHeight))
+	case ViewSettings:
+		b.WriteString(a.renderSettings(bodyHeight))
 	}
 	b.WriteByte('\n')
 	b.WriteString(a.renderFooter())
@@ -73,7 +75,7 @@ func (a *App) renderHeader() string {
 }
 
 func (a *App) renderTabs() string {
-	names := []string{"nodes", "subs", "logs"}
+	names := []string{"nodes", "subs", "logs", "config"}
 	var parts []string
 	for i, name := range names {
 		style := dimStyle
@@ -84,6 +86,61 @@ func (a *App) renderTabs() string {
 		parts = append(parts, style.Render(label))
 	}
 	return strings.Join(parts, "")
+}
+
+// renderSettings draws the vim-style settings menu (opening: :config / :settings).
+func (a *App) renderSettings(height int) string {
+	voff := visibleOffset(a.setIdx, settingsRows, height)
+	var lines []string
+	lines = append(lines, " "+dimStyle.Render("SET   VALUE")+padRight("", 44)+
+		dimStyle.Render("описание"))
+	for i := voff; i < settingsRows; i++ {
+		marker := " "
+		style := normalStyle
+		if i == a.setIdx {
+			marker = ">"
+			style = selectedStyle
+		}
+		var name, val, hint string
+		switch i {
+		case setTun:
+			name, hint = "tun_mode", "маршрутизация вся системы через ядро"
+			val = onOff(a.store.TunMode)
+		case setAuto:
+			name, hint = "auto_mode", "селектор всегда на самой быстрой ноде"
+			val = onOff(a.store.AutoMode)
+		case setProfile:
+			name, hint = "routing_profile", "global / RU→direct"
+			if a.store.RoutingProfile == process.ProfileRUBypass {
+				val = "RU→direct"
+			} else {
+				val = "global"
+			}
+		case setAutostart:
+			name, hint = "autostart", "запускать ядро при старте ratbox"
+			val = onOff(a.store.AutoStart)
+		case setMixedPort:
+			name, hint = "mixed_port", "локальный HTTP/SOCKS прокси"
+			val = fmt.Sprintf("%d", a.store.MixedPort)
+		case setCoreBinary:
+			name, hint = "core_binary", "путь к бинарю или пусто = PATH"
+			if a.store.CoreBinary == "" {
+				val = "(auto)"
+			} else {
+				val = a.store.CoreBinary
+			}
+		}
+		lines = append(lines, " "+style.Render(marker+" "+padRight(name, 16)+padRight(val, 38))+
+			dimStyle.Render(TruncateVisible(hint, a.width-60)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func onOff(b bool) string {
+	if b {
+		return okStyle.Render("on")
+	}
+	return dimStyle.Render("off")
 }
 
 func (a *App) renderNodes(height int) string {
@@ -220,7 +277,9 @@ func (a *App) renderFooter() string {
 	case ViewSubs:
 		keys = "↑↓ select · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewLogs:
-		keys = "j/k,g/G scroll · m tun · y auto · p profile · s start/stop"
+		keys = "j/k,g/G scroll · s start/stop · : commands"
+	case ViewSettings:
+		keys = "↑↓ select · enter/space toggle · e edit · esc back · : commands"
 	}
 	keys += " · 1/2/3 tabs · q quit"
 	var status string
