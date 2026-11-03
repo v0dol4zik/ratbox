@@ -38,7 +38,7 @@ type Manager struct {
 	startedAtUnix int64
 	controller    string // clash api address, set after Start
 	secret        string
-	servicePort   int    // always-direct loopback inbound port, set after Start
+	servicePort   int // always-direct loopback inbound port, set after Start
 }
 
 func NewManager(cfg Config) *Manager {

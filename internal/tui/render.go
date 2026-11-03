@@ -17,7 +17,8 @@ func (a *App) View() string {
 	b.WriteByte('\n')
 	b.WriteString(a.renderTabs())
 	b.WriteByte('\n')
-	bodyHeight := a.height - 4 // header + tabs + footer + status
+	// chrome = header + tabs + separator + status line + key hints
+	bodyHeight := a.height - 5
 	switch a.view {
 	case ViewNodes:
 		b.WriteString(a.renderNodes(bodyHeight))
@@ -106,7 +107,7 @@ func (a *App) renderNodes(height int) string {
 	offset := visibleOffset(a.nodeIdx, len(a.store.Nodes), visible)
 	for i := offset; i < len(a.store.Nodes) && len(lines)-1 < visible; i++ {
 		n := a.store.Nodes[i]
-		name := n.Tag
+		name := cleanTag(n.Tag)
 		if len(a.store.Subs) > 1 && n.SubID != "" {
 			name = a.store.SubName(n.SubID) + "/" + n.Tag
 		}
@@ -232,6 +233,15 @@ func (a *App) renderFooter() string {
 	}
 	statusLine := "\n" + status
 	return statusLine + "\n" + helpStyle.Render(keys)
+}
+
+// cleanTag strips variation selectors (U+FE0F) and zero-width joiners that
+// some terminals count as printable cells, breaking column alignment entirely
+// (e.g. "⚡️" renders as ⚡ + a stray box that eats the rest of the row).
+func cleanTag(s string) string {
+	s = strings.ReplaceAll(s, "\ufe0f", "")
+	s = strings.ReplaceAll(s, "\u200d", "")
+	return s
 }
 
 func visibleOffset(cursor, total, visible int) int {
