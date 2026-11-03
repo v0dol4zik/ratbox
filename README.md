@@ -27,7 +27,7 @@ Run `ratbox`, then:
 
 - `2` → subscriptions tab, `a` to add a subscription URL
 - `1` → nodes tab, `Enter` to select the active node
-- `t` — test selected node latency, `T` — test all
+- `t` — test the node under the cursor, `a` — test all nodes (`T` stays as an alias)
 - `s` — start/stop the core, `3` — logs tab
 - `q` — quit
 

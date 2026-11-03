@@ -933,7 +933,9 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			n := a.store.Nodes[a.nodeIdx]
 			a.status = "testing " + n.Tag + "…"
 			return a, delayCmd(a, n.Tag)
-		case "T":
+		case "a", "T":
+			// "a" = test ALL without reaching for shift; "T" kept for
+			// muscle memory of older releases
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
