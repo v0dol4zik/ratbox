@@ -65,7 +65,7 @@ func TestBuildConfigChecks(t *testing.T) {
 	nodes = append(nodes, n)
 
 	dir := t.TempDir()
-	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: nodes[0].Tag}, 2080, "127.0.0.1:9090", "topsecret", dir)
+	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: nodes[0].Tag, ServicePort: 39101}, 2080, "127.0.0.1:9090", "topsecret", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestBuildConfigTUN(t *testing.T) {
 		nodes = append(nodes, n)
 	}
 	dir := t.TempDir()
-	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: nodes[0].Tag, Tun: true}, 2080, "127.0.0.1:9091", "topsecret", dir)
+	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: nodes[0].Tag, Tun: true, ServicePort: 39102}, 2080, "127.0.0.1:9091", "topsecret", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +148,7 @@ func TestBuildConfigAutoRU(t *testing.T) {
 		Tun:            true,
 		Auto:           true,
 		RoutingProfile: ProfileRUBypass,
+		ServicePort:    39103,
 	}, 2080, "127.0.0.1:9092", "topsecret", dir)
 	if err != nil {
 		t.Fatal(err)
@@ -165,6 +166,7 @@ func TestBuildConfigAutoRU(t *testing.T) {
 	for _, want := range []string{
 		`"type": "urltest"`,
 		`"tag": "auto"`,
+		`"tag": "service-in"`,
 		`"tag": "geoip-ru"`,
 		`"tag": "geosite-gov-ru"`,
 		`"outbound": "direct"`,
@@ -235,7 +237,7 @@ func TestCoreStartSmoke(t *testing.T) {
 	}
 	mixedPort := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
-	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: n.Tag, Auto: true},
+	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: n.Tag, Auto: true, ServicePort: 39104},
 		mixedPort, "127.0.0.1:39090", secret, dir)
 	if err != nil {
 		t.Fatal(err)

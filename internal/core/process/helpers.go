@@ -14,6 +14,15 @@ func nowUnix() int64 { return time.Now().Unix() }
 func after5s() <-chan time.Time { return time.After(5 * time.Second) }
 
 // drainLogs reads core stderr into the log ring buffer.
+func freeLocalPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
 func drainLogs(r interface{ Read([]byte) (int, error) }, m *Manager) {
 	scanner := bufio.NewScanner(bufio.NewReader(r))
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)

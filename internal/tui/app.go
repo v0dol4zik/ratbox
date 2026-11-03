@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +174,18 @@ func (a *App) tryStartCore() tea.Msg {
 	return coreStateMsg{true, "", nil, false}
 }
 
+// serviceProxy returns the always-direct subscription channel of a running
+// core, or "" when the core is stopped (plain direct fetch is fine then).
+func (a *App) serviceProxy() string {
+	if !a.mgr.Running() {
+		return ""
+	}
+	if p := a.mgr.ServicePort(); p > 0 {
+		return "http://127.0.0.1:" + strconv.Itoa(p)
+	}
+	return ""
+}
+
 // startOptions assembles the core start request from the store state.
 func (a *App) startOptions() process.StartOptions {
 	var activeTag string
@@ -252,7 +265,7 @@ func (a *App) submitAddSubCmd(raw string) tea.Cmd {
 		if subURL == "" {
 			return opDoneMsg{text: "invalid url", err: nil}
 		}
-		nodes, err := sub.Fetch(subURL, 15*time.Second)
+		nodes, err := sub.Fetch(subURL, 15*time.Second, a.serviceProxy())
 		if err != nil {
 			return opDoneMsg{text: "fetch failed", err: err}
 		}
@@ -300,7 +313,7 @@ func (a *App) updateSubCmd(subID string) tea.Cmd {
 		if s == nil {
 			return opDoneMsg{text: "subscription not found"}
 		}
-		nodes, err := sub.Fetch(s.URL, 15*time.Second)
+		nodes, err := sub.Fetch(s.URL, 15*time.Second, a.serviceProxy())
 		if err != nil {
 			return opDoneMsg{text: "update failed", err: err}
 		}

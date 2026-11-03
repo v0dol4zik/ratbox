@@ -38,6 +38,7 @@ type Manager struct {
 	startedAtUnix int64
 	controller    string // clash api address, set after Start
 	secret        string
+	servicePort   int    // always-direct loopback inbound port, set after Start
 }
 
 func NewManager(cfg Config) *Manager {
@@ -55,6 +56,13 @@ func (m *Manager) isRunning() bool {
 	return m.cmd != nil && m.cmd.Process != nil &&
 		m.cmd.ProcessState == nil &&
 		m.started
+}
+
+// ServicePort returns the loopback port of the always-direct service inbound.
+func (m *Manager) ServicePort() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.servicePort
 }
 
 func (m *Manager) Controller() string {
@@ -102,6 +110,9 @@ const (
 // AutoTag is the urltest group that always points to the fastest node.
 const AutoTag = "auto"
 
+// ServiceTag is the loopback inbound whose traffic always goes direct.
+const ServiceTag = "service-in"
+
 // StartOptions describe the runtime layout selected in the TUI.
 type StartOptions struct {
 	Nodes          []*model.Node
@@ -109,6 +120,7 @@ type StartOptions struct {
 	Tun            bool
 	Auto           bool // urltest group is the selector default
 	RoutingProfile int  // ProfileGlobal | ProfileRUBypass
+	ServicePort    int  // loopback port of the always-direct service inbound
 }
 
 func (m *Manager) Start(opts StartOptions) error {
@@ -125,6 +137,14 @@ func (m *Manager) Start(opts StartOptions) error {
 	if err != nil {
 		return fmt.Errorf("controller: %w", err)
 	}
+	if opts.ServicePort == 0 {
+		servicePort, err := freeLocalPort()
+		if err != nil {
+			return fmt.Errorf("service port: %w", err)
+		}
+		opts.ServicePort = servicePort
+	}
+	m.servicePort = opts.ServicePort
 	cfgJSON, err := BuildConfig(opts, m.cfg.MixedPort, controller, secret, m.cfg.DataDir)
 	if err != nil {
 		return err
@@ -300,7 +320,16 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 		"auto_detect_interface": true,
 		"final":                 SelectorTag,
 	}
+	// service inbound: loopback entry whose traffic always goes direct
+	// (subscription updates must survive a dead node under tun)
+	inbounds = append(inbounds, map[string]any{
+		"type":        "mixed",
+		"tag":         ServiceTag,
+		"listen":      "127.0.0.1",
+		"listen_port": opts.ServicePort,
+	})
 	rules := []map[string]any{
+		{"inbound": []string{ServiceTag}, "action": "route", "outbound": "direct"},
 		{"action": "sniff"},
 		{"ip_is_private": true, "action": "route", "outbound": "direct"},
 	}

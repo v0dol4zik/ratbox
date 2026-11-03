@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,8 +17,16 @@ var supportedSchemes = []string{
 
 // Fetch downloads a subscription and parses its contents.
 // The payload may be a base64-encoded list or plain text of share links.
-func Fetch(subURL string, timeout time.Duration) ([]*model.Node, error) {
-	client := &http.Client{Timeout: timeout}
+// A non-empty proxyURL routes the download through the service channel
+// so subscription updates survive a broken active node under tun.
+func Fetch(subURL string, timeout time.Duration, proxyURL string) ([]*model.Node, error) {
+	transport := &http.Transport{}
+	if proxyURL != "" {
+		if pu, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(pu)
+		}
+	}
+	client := &http.Client{Timeout: timeout, Transport: transport}
 	req, err := http.NewRequest(http.MethodGet, strings.TrimSpace(subURL), nil)
 	if err != nil {
 		return nil, err
