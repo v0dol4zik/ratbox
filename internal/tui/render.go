@@ -250,15 +250,24 @@ func (a *App) renderLogs(height int) string {
 	if end > len(lines) {
 		end = len(lines)
 	}
-	shown := lines[off:end]
-	for _, l := range shown {
-		if strings.Contains(l, ".INFO") {
-			l = normalStyle.Render(l)
-		} else if strings.Contains(l, "[ratbox]") {
-			l = titleStyle.Render(l)
+	var b strings.Builder
+	for i, l := range lines[off:end] {
+		if i > 0 {
+			b.WriteString("\n ")
+		}
+		b.WriteByte(' ')
+		switch {
+		case strings.Contains(l, "FATAL"), strings.Contains(l, "ERROR"):
+			b.WriteString(errStyle.Render(l))
+		case strings.Contains(l, "WARN"):
+			b.WriteString(warnStyle.Render(l))
+		case strings.Contains(l, "[ratbox]"):
+			b.WriteString(titleStyle.Render(l))
+		default:
+			b.WriteString(normalStyle.Render(l))
 		}
 	}
-	return " " + strings.Join(shown, "\n ")
+	return b.String()
 }
 
 func (a *App) renderFooter() string {

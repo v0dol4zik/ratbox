@@ -27,12 +27,18 @@ func padRight(s string, w int) string {
 	}
 	width := lipgloss.Width(s)
 	if width >= w {
-		if w > 1 {
-			return TruncateVisible(s, w)
-		}
-		return s[:w]
+		// TruncateVisible handles multibyte correctly; w-1 has no meaning
+		// for empty strings, and a byte slice on multibyte runes panics
+		return TruncateVisible(s, maxInt(w, 1))
 	}
 	return s + strings.Repeat(" ", w-width)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // TruncateVisible cuts a string considering double-width runes.

@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,36 @@ type delayMsg struct {
 	err error
 }
 
+// subFetchedMsg carries fetched subscription nodes; all store mutations
+// happen in Update, never in the Cmd goroutine (data races otherwise).
+type subFetchedMsg struct {
+	add    bool   // add as a new subscription vs update an existing one
+	subID  string // update target
+	name   string // add: parsed name
+	url    string // add: subscription url
+	nodes  []*model.Node
+	err    error
+	reason string // error context to show in the status
+}
+
+// linkParsedMsg carries a single parsed share link node.
+type linkParsedMsg struct {
+	node *model.Node
+	err  error
+}
+
+// capsGrantedMsg: sudo setcap succeeded, the core may be started now.
+type capsGrantedMsg struct{}
+
+// nodeSelectedMsg carries a finished live selector switch; the model
+// (store, active id) is mutated in Update, never in the Cmd goroutine.
+type nodeSelectedMsg struct {
+	nodeID string
+	tag    string
+}
+
+var errCoreNotRunning = errors.New("core is not running")
+
 type opDoneMsg struct {
 	text  string
 	err   error
@@ -123,39 +154,40 @@ func (a *App) Init() tea.Cmd {
 }
 
 func (a *App) startCoreCmd() tea.Cmd {
+	// snapshot the store in the Update thread: the goroutine below must
+	// not read model state that Update may mutate concurrently
+	opts := a.startOptions()
+	coreBinary := a.store.CoreBinary
+	tun := a.store.TunMode
 	return func() tea.Msg {
-		for attempt := 0; ; attempt++ {
-			msg := a.tryStartCore()
-			cm, ok := msg.(coreStateMsg)
-			if ok && cm.running {
-				return msg
-			}
-			// first failed attempt with a tun permission problem:
-			// ask for the sudo password right in the TUI. polkit/pkexec is
-			// deliberately NOT used here: without a GUI agent pkexec builds
-			// a textual prompt in the terminal on top of the TUI and the
-			// keystrokes are stolen by bubbletea — a separate /dev/tty
-			// reader cannot coexist with it.
-			if ok && cm.tunPerm && attempt == 0 {
-				bin, binErr := process.ResolveBinaryPath(a.store.CoreBinary)
-				if binErr != nil {
-					bin = "sing-box"
-				}
-				return needSudoPromptMsg{binary: bin}
-			}
+		msg := a.tryStartCore(opts, tun)
+		cm, ok := msg.(coreStateMsg)
+		if ok && cm.running {
 			return msg
 		}
+		// a failed start under tun with missing capabilities:
+		// ask for the sudo password right in the TUI. polkit/pkexec is
+		// deliberately NOT used here: without a GUI agent pkexec builds a
+		// textual prompt in the terminal on top of the TUI and bubbletea
+		// steals the keystrokes — a separate /dev/tty reader cannot coexist.
+		if ok && cm.tunPerm {
+			bin, binErr := process.ResolveBinaryPath(coreBinary)
+			if binErr != nil {
+				bin = "sing-box"
+			}
+			return needSudoPromptMsg{binary: bin}
+		}
+		return msg
 	}
 }
 
 // tryStartCore performs a single start attempt and classifies failures.
-func (a *App) tryStartCore() tea.Msg {
+func (a *App) tryStartCore(opts process.StartOptions, tun bool) tea.Msg {
 	if a.mgr.Running() {
 		if err := a.mgr.Stop(); err != nil {
 			return coreStateMsg{false, "", err, false}
 		}
 	}
-	opts := a.startOptions()
 	if err := a.mgr.Start(opts); err != nil {
 		return coreStateMsg{false, "", err, false}
 	}
@@ -171,7 +203,7 @@ func (a *App) tryStartCore() tea.Msg {
 	}
 	if !ok {
 		_ = a.mgr.Stop()
-		if a.store.TunMode && a.coreDiedOnPerm() {
+		if tun && a.coreDiedOnPerm() {
 			return coreStateMsg{false, "", errors.New("insufficient permissions for tun (CAP_NET_ADMIN)"), true}
 		}
 		detail := a.lastCoreErr()
@@ -300,6 +332,7 @@ func (a *App) editSetting(idx int) tea.Cmd {
 			a.store.MixedPort = port
 			_ = a.store.Save()
 			if a.mgr.Running() {
+				a.syncManagerConfig()
 				a.status = fmt.Sprintf("port %d — restarting core…", port)
 				return a.startCoreCmd()
 			}
@@ -323,6 +356,7 @@ func (a *App) editSetting(idx int) tea.Cmd {
 			a.store.CoreBinary = s
 			_ = a.store.Save()
 			if a.mgr.Running() {
+				a.syncManagerConfig()
 				a.status = "core binary — restarting core…"
 				return a.startCoreCmd()
 			}
@@ -358,7 +392,8 @@ func normKey(k tea.KeyMsg) string {
 	return s
 }
 
-// bestNodeMsg reports the bootstrap node pick result.
+// bestNodeMsg reports the bootstrap node pick result; the node id is
+// resolved from the tag in Update (no store reads from the goroutine).
 type bestNodeMsg struct {
 	tag string
 	ms  int
@@ -368,9 +403,13 @@ type bestNodeMsg struct {
 // pickBestNodeCmd delay-tests every node in parallel and selects the
 // fastest one. Runs after a cold start with no explicit selection.
 func (a *App) pickBestNodeCmd() tea.Cmd {
+	c := a.client
+	tags := make([]string, 0, len(a.store.Nodes)) // snapshot taken in Update
+	for _, n := range a.store.Nodes {
+		tags = append(tags, n.Tag)
+	}
 	return func() tea.Msg {
-		c := a.client
-		if c == nil || len(a.store.Nodes) == 0 {
+		if c == nil || len(tags) == 0 {
 			return nil
 		}
 		type result struct {
@@ -380,7 +419,7 @@ func (a *App) pickBestNodeCmd() tea.Cmd {
 		results := make(chan result, len(a.store.Nodes))
 		semi := make(chan struct{}, 5)
 		var wg sync.WaitGroup
-		for _, n := range a.store.Nodes {
+		for _, tag := range tags {
 			wg.Add(1)
 			semi <- struct{}{}
 			go func(tag string) {
@@ -389,7 +428,7 @@ func (a *App) pickBestNodeCmd() tea.Cmd {
 				if ms, err := c.Delay(tag, 3*time.Second, clash.DefaultTestURL); err == nil {
 					results <- result{tag, ms}
 				}
-			}(n.Tag)
+			}(tag)
 		}
 		wg.Wait()
 		close(results)
@@ -402,16 +441,13 @@ func (a *App) pickBestNodeCmd() tea.Cmd {
 		if best == "" {
 			return bestNodeMsg{err: errors.New("all nodes failed the delay test")}
 		}
+		if best == "" {
+			return bestNodeMsg{err: errors.New("all nodes failed the delay test")}
+		}
 		if err := c.Select(process.SelectorTag, best); err != nil {
 			return bestNodeMsg{err: err}
 		}
-		for _, n := range a.store.Nodes {
-			if n.Tag == best {
-				a.store.ActiveNodeID = n.ID
-				_ = a.store.Save()
-				break
-			}
-		}
+		// bestID is resolved in Update (case bestNodeMsg) — no store reads here
 		return bestNodeMsg{tag: best, ms: bestMs}
 	}
 }
@@ -476,13 +512,14 @@ func (a *App) stopCoreCmd() tea.Cmd {
 }
 
 func trafficTickCmd(app *App) tea.Cmd {
+	c := app.client // snapshot: Update may swap/reset it while we tick
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg {
-		if app.client == nil {
+		if c == nil {
 			return trafficTickMsg{}
 		}
-		t, err := app.client.Traffic()
+		t, err := c.Traffic()
 		msg := trafficTickMsg{traffic: t, err: err}
-		if p, perr := app.client.Proxies(); perr == nil {
+		if p, perr := c.Proxies(); perr == nil {
 			if pr, ok := p[process.AutoTag]; ok {
 				msg.autoNow = pr.Now
 			}
@@ -492,8 +529,9 @@ func trafficTickCmd(app *App) tea.Cmd {
 }
 
 func delayCmd(app *App, tag string) tea.Cmd {
+	c := app.client // snapshot: see trafficTickCmd
 	return func() tea.Msg {
-		if app.client == nil {
+		if c == nil {
 			return delayMsg{tag: tag, err: fmt.Errorf("core is not running")}
 		}
 		// at most 5 probes in flight: a full-strength volley trips over
@@ -502,102 +540,94 @@ func delayCmd(app *App, tag string) tea.Cmd {
 			app.dSem <- struct{}{}
 			defer func() { <-app.dSem }()
 		}
-		ms, err := app.client.Delay(tag, 5*time.Second, clash.DefaultTestURL)
+		ms, err := c.Delay(tag, 5*time.Second, clash.DefaultTestURL)
 		return delayMsg{tag: tag, ms: ms, err: err}
 	}
 }
 
-func (a *App) submitAddSubCmd(raw string) tea.Cmd {
+// subFetchCmd fetches a subscription (or the raw url) in the background.
+// Store mutations happen in Update on subFetchedMsg.
+func (a *App) subFetchCmd(raw string, add bool, subID, reason string) tea.Cmd {
 	return func() tea.Msg {
 		name, subURL := parseSubInput(raw)
 		if subURL == "" {
-			return opDoneMsg{text: "invalid url", err: nil}
+			return opDoneMsg{text: "invalid url", err: fmt.Errorf("%q", raw)}
 		}
 		nodes, err := sub.Fetch(subURL, 15*time.Second, a.serviceProxy())
 		if err != nil {
-			return opDoneMsg{text: "fetch failed", err: err}
+			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL}
 		}
-		st := a.store
-		subObj := st.AddSubscription(name, subURL, uniquifyTags(st, nodes))
-		if err := st.Save(); err != nil {
-			return opDoneMsg{text: "save failed", err: err}
+		if len(nodes) == 0 && !add {
+			// an update that yields nothing must not wipe the current nodes
+			return subFetchedMsg{add: add, subID: subID, reason: reason,
+				err: fmt.Errorf("subscription returned 0 nodes — keeping the current set")}
 		}
-		a.restartIfRunning()
-		return opDoneMsg{text: fmt.Sprintf("subscription %q: %d nodes", subObj.Name, len(nodes))}
+		return subFetchedMsg{add: add, subID: subID, nodes: nodes, reason: reason, name: name, url: subURL}
 	}
 }
 
-func (a *App) submitAddLinkCmd(raw string) tea.Cmd {
+// linkParseCmd parses a pasted share link in the background.
+func (a *App) linkParseCmd(raw string) tea.Cmd {
 	return func() tea.Msg {
-		// pasted a subscription url -> treat as subscription
-		low := strings.ToLower(strings.TrimSpace(raw))
-		if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
-			cmd := a.submitAddSubCmd(raw)
+		// a subscription url pasted into the node field -> subscription
+		if isHTTPURL(raw) {
+			cmd := a.subFetchCmd(raw, true, "", "")
 			return cmd()
 		}
 		node, err := sub.ParseLink(raw)
 		if err != nil {
 			return opDoneMsg{text: "invalid link", err: err}
 		}
-		st := a.store
-		node.Tag = st.UniqueTag(node.Tag)
-		node.SubID = ""
-		st.Nodes = append(st.Nodes, node)
-		if st.ActiveNodeID == "" {
-			st.ActiveNodeID = node.ID
-		}
-		if err := st.Save(); err != nil {
-			return opDoneMsg{text: "save failed", err: err}
-		}
-		a.restartIfRunning()
-		return opDoneMsg{text: fmt.Sprintf("node %q added", node.Tag)}
+		return linkParsedMsg{node: node}
 	}
 }
 
-func (a *App) updateSubCmd(subID string) tea.Cmd {
-	return func() tea.Msg {
-		st := a.store
-		s := st.Sub(subID)
-		if s == nil {
-			return opDoneMsg{text: "subscription not found"}
-		}
-		nodes, err := sub.Fetch(s.URL, 15*time.Second, a.serviceProxy())
-		if err != nil {
-			return opDoneMsg{text: "update failed", err: err}
-		}
-		store.ReplaceSubNodes(st, s, uniquifyTags(st, nodes))
-		if err := st.Save(); err != nil {
-			return opDoneMsg{text: "save failed", err: err}
-		}
-		a.restartIfRunning()
-		return opDoneMsg{text: fmt.Sprintf("updated %q: %d nodes", s.Name, len(nodes))}
+// updateSubCmd refetches the selected subscription in the background.
+func (a *App) updateSubCmd() tea.Cmd {
+	if a.subIdx >= len(a.store.Subs) {
+		return nil
 	}
+	s := a.store.Subs[a.subIdx]
+	a.status = "updating " + s.Name + "…"
+	return a.subFetchCmd(s.URL, false, s.ID, "updated "+s.Name)
 }
 
 func (a *App) selectNodeCmd(node *model.Node) tea.Cmd {
 	return func() tea.Msg {
 		if a.client == nil {
-			return opDoneMsg{text: "core is not running", err: nil}
+			return opDoneMsg{text: "core is not running", err: errCoreNotRunning}
 		}
 		if err := a.client.Select(process.SelectorTag, node.Tag); err != nil {
 			return opDoneMsg{text: "select failed", err: err}
 		}
-		a.store.ActiveNodeID = node.ID
-		if err := a.store.Save(); err != nil {
-			return opDoneMsg{text: "save failed", err: err}
-		}
-		return opDoneMsg{text: fmt.Sprintf("selected: %s", node.Tag)}
+		return nodeSelectedMsg{nodeID: node.ID, tag: node.Tag}
 	}
 }
 
-// restartIfRunning re-instantiates the core so a new config takes effect.
-func (a *App) restartIfRunning() {
-	if !a.mgr.Running() {
+// syncManagerConfig pushes the current store values (mixed port, core
+// binary) into the manager so restarts use what the settings tab shows.
+func (a *App) syncManagerConfig() {
+	dataDir, _, err := store.DefaultDirs()
+	if err != nil {
 		return
 	}
-	_ = a.mgr.Stop()
-	_ = a.mgr.Start(a.startOptions())
-	a.resetClient()
+	a.mgr.UpdateConfig(process.Config{
+		Binary:    a.store.CoreBinary,
+		MixedPort: a.store.MixedPort,
+		DataDir:   filepath.Join(dataDir, "core"),
+	})
+}
+
+// restartCoreCmd rebuilds the running core with the current store state
+// (nodes, tun, profile, port). Drain-and-restart happens inside tryStartCore,
+// which is goroutine-safe (Manager is locked); the result arrives as a
+// coreStateMsg, so the model still mutates only in Update.
+func (a *App) restartCoreCmd() tea.Cmd {
+	if !a.mgr.Running() {
+		return nil
+	}
+	a.syncManagerConfig()
+	return a.startCoreCmd()
 }
 
 func (a *App) resetClient() {
@@ -606,6 +636,7 @@ func (a *App) resetClient() {
 	} else {
 		a.client = nil
 		a.rateUp, a.rateDown = 0, 0
+		a.traffic = clash.Traffic{} // stale counters make rates negative after a restart
 	}
 }
 
@@ -713,7 +744,82 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status, a.statusErr = "node bootstrap failed: "+m.err.Error()+" — press m to turn tun off", true
 			return a, nil
 		}
+		if n := a.store.Node(a.store.ActiveNodeID); n == nil || n.Tag != m.tag {
+			for _, n := range a.store.Nodes {
+				if n.Tag == m.tag {
+					a.store.ActiveNodeID = n.ID
+					break
+				}
+			}
+		}
+		if err := a.store.Save(); err != nil {
+			a.status, a.statusErr = "save failed: "+err.Error(), true
+			return a, nil
+		}
 		a.status, a.statusErr = fmt.Sprintf("auto-picked the fastest node: %s (%dms)", m.tag, m.ms), false
+		return a, nil
+
+	case subFetchedMsg:
+		if m.err != nil {
+			pre := m.reason
+			if pre != "" {
+				pre += ": "
+			}
+			a.status, a.statusErr = pre+errShort(m.err), true
+			return a, nil
+		}
+		if m.add {
+			subObj := a.store.AddSubscription(m.name, m.url, uniquifyTags(a.store, m.nodes))
+			if err := a.store.Save(); err != nil {
+				a.status, a.statusErr = "save failed: "+err.Error(), true
+				return a, nil
+			}
+			a.status, a.statusErr = fmt.Sprintf("subscription %q: %d nodes", subObj.Name, len(m.nodes)), false
+			return a, a.restartCoreCmd()
+		}
+		subObj := a.store.Sub(m.subID)
+		if subObj == nil {
+			a.status, a.statusErr = "subscription vanished", true
+			return a, nil
+		}
+		store.ReplaceSubNodes(a.store, subObj, uniquifyTags(a.store, m.nodes))
+		if err := a.store.Save(); err != nil {
+			a.status, a.statusErr = "save failed: "+err.Error(), true
+			return a, nil
+		}
+		a.status, a.statusErr = fmt.Sprintf("%s: %d nodes", m.reason, len(m.nodes)), false
+		return a, a.restartCoreCmd()
+
+	case linkParsedMsg:
+		if m.err != nil {
+			a.status, a.statusErr = "add node: "+errShort(m.err), true
+			return a, nil
+		}
+		node := m.node
+		node.Tag = a.store.UniqueTag(node.Tag)
+		node.SubID = ""
+		a.store.Nodes = append(a.store.Nodes, node)
+		if a.store.ActiveNodeID == "" {
+			a.store.ActiveNodeID = node.ID
+		}
+		if err := a.store.Save(); err != nil {
+			a.status, a.statusErr = "save failed: "+err.Error(), true
+			return a, nil
+		}
+		a.status, a.statusErr = fmt.Sprintf("node %q added", node.Tag), false
+		return a, a.restartCoreCmd()
+
+	case capsGrantedMsg:
+		a.status, a.statusErr = "caps granted — starting core…", false
+		return a, a.startCoreCmd()
+
+	case nodeSelectedMsg:
+		a.store.ActiveNodeID = m.nodeID
+		if err := a.store.Save(); err != nil {
+			a.status, a.statusErr = "save failed: "+err.Error(), true
+			return a, nil
+		}
+		a.status, a.statusErr = "selected: "+m.tag, false
 		return a, nil
 
 	case opDoneMsg:
@@ -730,7 +836,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		if m.err != nil {
-			a.status, a.statusErr = m.text+": "+m.err.Error(), true
+			txt := m.text
+			if txt == m.err.Error() {
+				txt = ""
+			}
+			if txt != "" {
+				txt += ": "
+			}
+			a.status, a.statusErr = txt+m.err.Error(), true
 		} else if m.text != "" {
 			a.status, a.statusErr = m.text, false
 		}
@@ -871,19 +984,20 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(cmds...)
 		case "n":
-			a.beginInput("share link or subscription url: ", func(s string) tea.Cmd { return a.submitAddLinkCmd(s) })
+			a.beginInput("share link or subscription url: ", a.linkParseCmd)
 		case "d":
 			if len(a.store.Nodes) == 0 {
 				return a, nil
 			}
 			n := a.store.Nodes[a.nodeIdx]
 			a.store.RemoveNode(n.ID)
+			delete(a.latency, n.Tag)
 			_ = a.store.Save()
 			if a.nodeIdx >= len(a.store.Nodes) && a.nodeIdx > 0 {
 				a.nodeIdx--
 			}
-			a.restartIfRunning()
 			a.status = "removed " + n.Tag
+			return a, a.restartCoreCmd()
 		}
 	case ViewSubs:
 		switch normKey(k) {
@@ -898,17 +1012,15 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "a":
 			a.beginInput("subscription url or share link: ", func(s string) tea.Cmd {
 				if isHTTPURL(s) {
-					return a.submitAddSubCmd(s)
+					return a.subFetchCmd(s, true, "", "")
 				}
-				return a.submitAddLinkCmd(s)
+				return a.linkParseCmd(s)
 			})
 		case "u":
 			if len(a.store.Subs) == 0 {
 				return a, nil
 			}
-			s := a.store.Subs[a.subIdx]
-			a.status = "updating " + s.Name + "…"
-			return a, a.updateSubCmd(s.ID)
+			return a, a.updateSubCmd()
 		case "d":
 			if len(a.store.Subs) == 0 {
 				return a, nil
@@ -920,8 +1032,8 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.subIdx--
 			}
 			a.nodeIdx = 0
-			a.restartIfRunning()
 			a.status = "removed sub " + s.Name
+			return a, a.restartCoreCmd()
 		}
 	case ViewSettings:
 		switch normKey(k) {
@@ -986,8 +1098,7 @@ func (a *App) sudoSetcapCmd(pw, bin string) tea.Cmd {
 			}
 			return opDoneMsg{text: "setcap", err: err}
 		}
-		next := a.startCoreCmd()
-		return next()
+		return capsGrantedMsg{}
 	}
 }
 
@@ -1029,13 +1140,6 @@ func parseSubInput(raw string) (name, subURL string) {
 		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 	}
 	return "", raw
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func visibleLogLines(height int) int {

@@ -48,6 +48,15 @@ func NewManager(cfg Config) *Manager {
 	return &Manager{cfg: cfg}
 }
 
+// UpdateConfig refreshes the runtime parameters (mixed port, core binary)
+// so a settings change actually applies on the next Start, not only after
+// a full ratbox restart.
+func (m *Manager) UpdateConfig(cfg Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+}
+
 // Running reports whether the core process is alive.
 func (m *Manager) Running() bool {
 	m.mu.Lock()
@@ -496,8 +505,16 @@ func RunSetCapsSudo(binary string, password []byte) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	_, _ = stdin.Write(append(password, '\n'))
+	// the append() copy of the password used to live on the heap until GC;
+	// hold it in an explicit buffer and wipe it right after the write
+	pwb := make([]byte, len(password)+1)
+	copy(pwb, password)
+	pwb[len(password)] = '\n'
+	_, _ = stdin.Write(pwb)
 	_ = stdin.Close()
+	for i := range pwb {
+		pwb[i] = 0
+	}
 	waitErr := cmd.Wait()
 	for i := range password {
 		password[i] = 0 // cleared; copy for -n path above cleared too
