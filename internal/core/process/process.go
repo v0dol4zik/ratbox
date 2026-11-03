@@ -22,7 +22,11 @@ import (
 
 const (
 	SelectorTag = "ratbox"
-	logCap      = 500
+	// Dedicated resources: never share sing-box's defaults with other clients.
+	TunName       = "ratbox0"
+	TunTableIndex = 12334
+	TunRuleIndex  = 12300
+	logCap        = 500
 )
 
 // Config holds runtime parameters for the core process.
@@ -164,6 +168,12 @@ func (m *Manager) Start(opts StartOptions) error {
 	controller, secret, err := freeController()
 	if err != nil {
 		return fmt.Errorf("controller: %w", err)
+	}
+	// Check before touching any existing process or routing state.
+	if opts.Tun {
+		if err := checkTUNConflicts("/sys/class/net"); err != nil {
+			return err
+		}
 	}
 	killOrphanCores(m.cfg.DataDir, m.cfg.MixedPort)
 
@@ -363,27 +373,26 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 	rules := []map[string]any{
 		{"inbound": []string{ServiceTag}, "action": "route", "outbound": "direct"},
 		{"action": "sniff"},
-		{"ip_is_private": true, "action": "route", "outbound": "direct"},
 	}
 	route["default_domain_resolver"] = "dns-local"
 
 	if tun {
-		// dns_mode "disabled": with auto_route the default is "hijack", which
-		// makes sing-box configure systemd-resolved over D-Bus. As a regular
-		// user process it hangs waiting for polkit authorization (no desktop
-		// agent -> pkttyagent on our tty, nobody can answer) — the core
-		// starts, then freezes answering nothing: 0-byte traffic, clash api
-		// timeouts, "core died" on every stop. Disabled = no resolve1 calls
-		// at all; the system resolver keeps working through the LAN router.
+		// Avoid native systemd-resolved configuration and its polkit prompts.
+		// Explicit DNS packets entering the TUN still use the hijack rule;
+		// the system stub/LAN resolver is not automatically redirected.
 		inbounds = append([]map[string]any{{
-			"type":         "tun",
-			"tag":          "tun-in",
-			"address":      []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			"mtu":          9000,
-			"auto_route":   true,
-			"strict_route": true,
-			"dns_mode":     "disabled",
+			"type":                 "tun",
+			"tag":                  "tun-in",
+			"interface_name":       TunName,
+			"address":              []string{"172.28.123.1/30", "fdfe:7261:7462::1/126"},
+			"mtu":                  1500,
+			"auto_route":           true,
+			"iproute2_table_index": TunTableIndex,
+			"iproute2_rule_index":  TunRuleIndex,
+			"strict_route":         true,
+			"dns_mode":             "disabled",
 		}}, inbounds...)
+		// DNS must be handled before the private-IP bypass (e.g. LAN DNS).
 		rules = append(rules, map[string]any{"protocol": "dns", "action": "hijack-dns"})
 		// dns through the tunnel to protect from poisoning;
 		// node hostnames still resolve via dns-local (domain_resolver above)
@@ -396,6 +405,7 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 		dns["final"] = "dns-remote"
 	}
 
+	rules = append(rules, map[string]any{"ip_is_private": true, "action": "route", "outbound": "direct"})
 	if opts.RoutingProfile == ProfileRUBypass {
 		ruTags := []string{}
 		for _, rs := range ruRuleSets {

@@ -12,7 +12,7 @@ latency and lets you switch nodes instantly via the clash api.
 - URLTest / delay measurement per node and for the whole list
 - traffic counters (up/down, per-second rate)
 - live core logs and generated-config inspection
-- TUN mode with auto_route + dns hijack (press `m` to toggle)
+- TUN mode with auto_route (press `m` to toggle)
 
 ## Install
 
@@ -41,12 +41,29 @@ binary needs CAP_NET_ADMIN, once:
 
     sudo setcap 'cap_net_admin,cap_net_raw=ep' $(readlink -f $(which sing-box))
 
-Then in the TUI press `m` to enable/disable and start the core. All traffic
-(including other apps) will go through the active node; DNS is hijacked and
-resolved via 1.1.1.1 through the tunnel to avoid poisoning.
+Then in the TUI press `m` to enable/disable and start the core. Stop other
+TUN/VPN clients (including Throne) first: ratbox refuses to start TUN when
+another active TUN interface exists. Otherwise another client's more-specific
+routes may capture traffic even while ratbox reports that its core is running.
+Mixed-proxy mode can still be used alongside another VPN.
 
-If the network breaks after a hard core crash (SIGKILL), starting and
-gracefully stopping the core again cleans up the routes; reboot also works.
+ratbox uses its own interface `ratbox0`, routing table `12334`, rule range
+starting at `12300`, and addresses `172.28.123.1/30`, `fdfe:7261:7462::1/126`.
+It does not delete other clients' interfaces or routing rules.
+
+With sing-box 1.14+, `dns_mode: disabled` avoids native systemd-resolved
+configuration and its polkit prompts. DNS packets reaching the TUN are
+hijacked and resolved through the proxy, but the system stub/LAN resolver
+is **not** automatically redirected; this is not a DNS-leak-free setup.
+
+Traffic totals come from the core's cumulative `/connections` counters,
+including closed connections. Rates use actual elapsed time; restarting the
+core resets the session counters. A green latency test verifies the node,
+not the host's TUN routing.
+
+After a hard core crash (SIGKILL), stale routes can remain. Do not blindly
+flush shared tables or delete other VPNs' rules. A reboot clears transient
+interfaces/routes if you cannot identify their owner safely.
 
 ## Notes on performance
 

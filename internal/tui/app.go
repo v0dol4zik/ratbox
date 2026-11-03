@@ -44,15 +44,17 @@ type App struct {
 	starting bool // a Start is in flight; a second s must not kill it
 	latency  map[string]int
 	// sweep bookkeeping for the latency summary status
-	dSem       chan struct{} // caps concurrent delay tests at 5
-	testTotal  int
-	testDone   int
-	testOk     int
-	testErr    string
-	tempActive bool // a throwaway test core is in flight
-	traffic    clash.Traffic
-	rateDown   int64
-	rateUp     int64
+	dSem         chan struct{} // caps concurrent delay tests at 5
+	testTotal    int
+	testDone     int
+	testOk       int
+	testErr      string
+	tempActive   bool // a throwaway test core is in flight
+	traffic      clash.Traffic
+	rateDown     int64
+	rateUp       int64
+	trafficAt    time.Time
+	trafficEpoch uint64 // discard ticks from a previous core/session
 
 	status    string
 	statusErr bool
@@ -87,6 +89,8 @@ type trafficTickMsg struct {
 	traffic clash.Traffic
 	err     error
 	autoNow string
+	at      time.Time
+	epoch   uint64
 }
 
 type delayMsg struct {
@@ -599,12 +603,13 @@ func (a *App) stopCoreCmd() tea.Cmd {
 
 func trafficTickCmd(app *App) tea.Cmd {
 	c := app.client // snapshot: Update may swap/reset it while we tick
+	if c == nil {
+		return nil
+	}
+	epoch := app.trafficEpoch
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg {
-		if c == nil {
-			return trafficTickMsg{}
-		}
 		t, err := c.Traffic()
-		msg := trafficTickMsg{traffic: t, err: err}
+		msg := trafficTickMsg{traffic: t, err: err, at: time.Now(), epoch: epoch}
 		if p, perr := c.Proxies(); perr == nil {
 			if pr, ok := p[process.AutoTag]; ok {
 				msg.autoNow = pr.Now
@@ -737,12 +742,14 @@ func (a *App) tunnelNodeCount() int {
 }
 
 func (a *App) resetClient() {
+	a.trafficEpoch++
+	a.rateUp, a.rateDown = 0, 0
+	a.traffic = clash.Traffic{}
+	a.trafficAt = time.Now()
 	if a.mgr.Running() {
 		a.client = clash.New(a.mgr.Controller(), a.mgr.Secret())
 	} else {
 		a.client = nil
-		a.rateUp, a.rateDown = 0, 0
-		a.traffic = clash.Traffic{} // stale counters make rates negative after a restart
 	}
 }
 
@@ -757,6 +764,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case trafficTickMsg:
+		if m.epoch != a.trafficEpoch {
+			return a, nil // old tick must not update or spawn a second timer chain
+		}
 		a.autoNow = m.autoNow
 		// the core may die outside of our control (crash, kill, port conflict);
 		// the tick is a cheap watchdog
@@ -768,10 +778,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status, a.statusErr = "core died — see the logs tab (3)", true
 		}
 		if a.client != nil && m.err == nil {
-			prev := a.traffic
-			a.traffic = m.traffic
-			a.rateDown = m.traffic.DownloadTotal - prev.DownloadTotal
-			a.rateUp = m.traffic.UploadTotal - prev.UploadTotal
+			// /connections totals include closed connections. Use them directly,
+			// and divide deltas by actual elapsed time (API calls can be slow).
+			a.rateDown = trafficRate(m.traffic.DownloadTotal, a.traffic.DownloadTotal, m.at.Sub(a.trafficAt))
+			a.rateUp = trafficRate(m.traffic.UploadTotal, a.traffic.UploadTotal, m.at.Sub(a.trafficAt))
+			a.traffic, a.trafficAt = m.traffic, m.at
+		} else if m.err != nil {
+			a.rateDown, a.rateUp = 0, 0
 		}
 		return a, trafficTickCmd(a)
 

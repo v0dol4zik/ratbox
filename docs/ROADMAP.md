@@ -43,7 +43,30 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.6 "TUN route conflicts, not imaginary counters"
+
+- [x] found concurrent Throne TUN and ratbox using table 2022 and the same
+        addresses; `ip route get` selected throne-tun, invalidating earlier
+        curl-based claims that ratbox TUN worked
+- [x] dedicated ratbox0 interface, table 12334, rules from 12300, separate
+        IPv4/IPv6 addresses and MTU 1500
+- [x] preflight refuses TUN start while another active TUN exists; does not
+        kill another client or delete its routes (mixed mode still works)
+- [x] discard unproven sysfs-counter workaround: sing-box /connections totals
+        are cumulative, confirmed by a local real-core download regression
+- [x] reset counters on every session, ignore stale traffic ticks after
+        restart, calculate rates using actual elapsed time
+- [x] DNS hijack rule before private-IP bypass; document that native DNS
+        configuration remains disabled and stub/LAN DNS may bypass the tunnel
+- [ ] verify real TUN end-to-end with Throne and the old ratbox core stopped;
+        not safe to run automatically on the current live network
+
 ## v0.6.5 "The tun that started and froze"
+
+**Correction (v0.6.6):** the following diagnosis overstated what was proven.
+Disabling native DNS removed the resolve1 interaction, but successful curl
+requests did not prove ratbox carried them: another VPN was present. Shared
+routing leftovers are not generally harmless. See v0.6.6 above.
 
 - [x] root cause of "tun core runs but 0 traffic, mixed/clash api dead":
         sing-box 1.14 tun defaults to dns_mode=hijack and calls
