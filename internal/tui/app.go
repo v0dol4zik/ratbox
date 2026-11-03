@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -462,6 +463,64 @@ func (a *App) runCommand(raw string) tea.Cmd {
 	return nil
 }
 
+// bestNodeMsg reports the bootstrap node pick result.
+type bestNodeMsg struct {
+	tag string
+	ms  int
+	err error
+}
+
+// pickBestNodeCmd delay-tests every node in parallel and selects the
+// fastest one. Runs after a cold start with no explicit selection.
+func (a *App) pickBestNodeCmd() tea.Cmd {
+	return func() tea.Msg {
+		c := a.client
+		if c == nil || len(a.store.Nodes) == 0 {
+			return nil
+		}
+		type result struct {
+			tag string
+			ms  int
+		}
+		results := make(chan result, len(a.store.Nodes))
+		semi := make(chan struct{}, 5)
+		var wg sync.WaitGroup
+		for _, n := range a.store.Nodes {
+			wg.Add(1)
+			semi <- struct{}{}
+			go func(tag string) {
+				defer wg.Done()
+				defer func() { <-semi }()
+				if ms, err := c.Delay(tag, 3*time.Second, clash.DefaultTestURL); err == nil {
+					results <- result{tag, ms}
+				}
+			}(n.Tag)
+		}
+		wg.Wait()
+		close(results)
+		best, bestMs := "", int(^uint(0)>>1)
+		for r := range results {
+			if r.ms < bestMs {
+				best, bestMs = r.tag, r.ms
+			}
+		}
+		if best == "" {
+			return bestNodeMsg{err: errors.New("all nodes failed the delay test")}
+		}
+		if err := c.Select(process.SelectorTag, best); err != nil {
+			return bestNodeMsg{err: err}
+		}
+		for _, n := range a.store.Nodes {
+			if n.Tag == best {
+				a.store.ActiveNodeID = n.ID
+				_ = a.store.Save()
+				break
+			}
+		}
+		return bestNodeMsg{tag: best, ms: bestMs}
+	}
+}
+
 // serviceProxy returns the always-direct subscription channel of a running
 // core, or "" when the core is stopped (plain direct fetch is fine then).
 func (a *App) serviceProxy() string {
@@ -714,13 +773,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.resetClient()
 		if m.running {
 			a.sudoAttempts = 0
-		}
-		if m.running {
 			a.startedAt = time.Now()
 			a.status, a.statusErr = "core started", false
-			return a, trafficTickCmd(a)
+			cmds := []tea.Cmd{trafficTickCmd(a)}
+			// no node selected and no auto mode: the selector would fall
+			// back to the first (often dead) node — under tun that kills
+			// the whole system connectivity; bootstrap to the fastest node
+			if a.store.ActiveNodeID == "" && !a.store.AutoMode {
+				a.status, a.statusErr = "core started — picking the fastest node…", false
+				cmds = append(cmds, a.pickBestNodeCmd())
+			}
+			return a, tea.Batch(cmds...)
 		}
 		a.status, a.statusErr = "core stopped", false
+		return a, nil
+
+	case bestNodeMsg:
+		if m.err != nil {
+			a.status, a.statusErr = "node bootstrap failed: "+m.err.Error()+" — press m to turn tun off", true
+			return a, nil
+		}
+		a.status, a.statusErr = fmt.Sprintf("auto-picked the fastest node: %s (%dms)", m.tag, m.ms), false
 		return a, nil
 
 	case opDoneMsg:
