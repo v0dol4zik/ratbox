@@ -93,7 +93,25 @@ func (m *Manager) log(line string) {
 
 // Start launches the core with the given nodes.
 // activeTag is preselected in the "ratbox" selector.
-func (m *Manager) Start(nodes []*model.Node, activeTag string, tun bool) error {
+// Routing profile knobs (v0.3.0).
+const (
+	ProfileGlobal   = 0 // everything through the selector
+	ProfileRUBypass = 1 // RU sites/IPs bypass the proxy while tun is on
+)
+
+// AutoTag is the urltest group that always points to the fastest node.
+const AutoTag = "auto"
+
+// StartOptions describe the runtime layout selected in the TUI.
+type StartOptions struct {
+	Nodes          []*model.Node
+	ActiveTag      string
+	Tun            bool
+	Auto           bool // urltest group is the selector default
+	RoutingProfile int  // ProfileGlobal | ProfileRUBypass
+}
+
+func (m *Manager) Start(opts StartOptions) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.isRunning() {
@@ -107,7 +125,7 @@ func (m *Manager) Start(nodes []*model.Node, activeTag string, tun bool) error {
 	if err != nil {
 		return fmt.Errorf("controller: %w", err)
 	}
-	cfgJSON, err := BuildConfig(nodes, activeTag, m.cfg.MixedPort, controller, secret, m.cfg.DataDir, tun)
+	cfgJSON, err := BuildConfig(opts, m.cfg.MixedPort, controller, secret, m.cfg.DataDir)
 	if err != nil {
 		return err
 	}
@@ -209,9 +227,19 @@ func resolveBinary(cfgPath string) (string, error) {
 	return "", fmt.Errorf("sing-box binary not found: install sing-box or set core_binary in the store")
 }
 
-// BuildConfig renders a sing-box config with:
-// mixed inbound, selector with all nodes, clash api, cache file.
-func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controller, secret, dataDir string, tun bool) ([]byte, error) {
+// ruRuleSets are the remote rule sets for the RU-bypass profile.
+var ruRuleSets = []map[string]any{
+	{"type": "remote", "tag": "geoip-ru", "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs", "download_detour": "direct"},
+	{"type": "remote", "tag": "geosite-gov-ru", "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-gov-ru.srs", "download_detour": "direct"},
+	{"type": "remote", "tag": "geosite-yandex", "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-yandex.srs", "download_detour": "direct"},
+	{"type": "remote", "tag": "geosite-vk", "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-vk.srs", "download_detour": "direct"},
+	{"type": "remote", "tag": "geosite-mailru", "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-mailru.srs", "download_detour": "direct"},
+}
+
+// BuildConfig renders a sing-box config with mixed inbound, selector
+// with all nodes, clash api and a cache file.
+func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir string) ([]byte, error) {
+	nodes, activeTag, tun := opts.Nodes, opts.ActiveTag, opts.Tun
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no nodes to start with")
 	}
@@ -221,7 +249,10 @@ func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controlle
 		"tag":                         SelectorTag,
 		"interrupt_exist_connections": true,
 	}
-	if activeTag != "" {
+	switch {
+	case opts.Auto:
+		selector["default"] = AutoTag
+	case activeTag != "":
 		selector["default"] = activeTag
 	}
 	outbounds := []map[string]any{selector}
@@ -234,9 +265,21 @@ func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controlle
 		tags = append(tags, n.Tag)
 		outbounds = append(outbounds, raw)
 	}
-	// keep "direct" selectable so the user can bypass everything
-	selector["outbounds"] = append(tags, "direct")
-	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
+	// keep "direct" selectable so the user can bypass everything;
+	// with auto mode the urltest group is selectable as well
+	selOut := append([]string{}, tags...)
+	selOut = append(selOut, "direct")
+	if opts.Auto {
+		selOut = append([]string{AutoTag}, selOut...)
+		outbounds = append(outbounds, map[string]any{
+			"type":      "urltest",
+			"tag":       AutoTag,
+			"outbounds": append([]string{}, tags...),
+			"url":       "https://www.gstatic.com/generate_204",
+			"interval":  "5m",
+		})
+	}
+	selector["outbounds"] = selOut
 
 	// inbounds: tun first (if enabled) + loopback mixed for local tests
 	inbounds := []map[string]any{
@@ -256,6 +299,12 @@ func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controlle
 		"auto_detect_interface": true,
 		"final":                 SelectorTag,
 	}
+	rules := []map[string]any{
+		{"action": "sniff"},
+		{"ip_is_private": true, "action": "route", "outbound": "direct"},
+	}
+	route["default_domain_resolver"] = "dns-local"
+
 	if tun {
 		inbounds = append([]map[string]any{{
 			"type":         "tun",
@@ -265,11 +314,7 @@ func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controlle
 			"auto_route":   true,
 			"strict_route": true,
 		}}, inbounds...)
-		route["rules"] = []map[string]any{
-			{"action": "sniff"},
-			{"protocol": "dns", "action": "hijack-dns"},
-		}
-		route["default_domain_resolver"] = "dns-local"
+		rules = append(rules, map[string]any{"protocol": "dns", "action": "hijack-dns"})
 		// dns through the tunnel to protect from poisoning;
 		// node hostnames still resolve via dns-local (domain_resolver above)
 		dns["servers"] = append(dns["servers"].([]map[string]any), map[string]any{
@@ -280,6 +325,26 @@ func BuildConfig(nodes []*model.Node, activeTag string, mixedPort int, controlle
 		})
 		dns["final"] = "dns-remote"
 	}
+
+	if opts.RoutingProfile == ProfileRUBypass {
+		ruTags := []string{}
+		for _, rs := range ruRuleSets {
+			ruTags = append(ruTags, rs["tag"].(string))
+		}
+		rules = append(rules, map[string]any{
+			"rule_set": ruTags,
+			"action":   "route",
+			"outbound": "direct",
+		})
+		route["rule_set"] = ruRuleSets
+		if tun {
+			// RU domains resolve locally so CDNs return nearby mirrors
+			dns["rules"] = []map[string]any{
+				{"rule_set": ruTags, "server": "dns-local"},
+			}
+		}
+	}
+	route["rules"] = rules
 
 	cfg := map[string]any{
 		"log": map[string]any{

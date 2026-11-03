@@ -1,9 +1,11 @@
 package process
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/v0dol4zik/ratbox/internal/model"
@@ -58,7 +60,7 @@ func TestBuildConfigChecks(t *testing.T) {
 	nodes = append(nodes, n)
 
 	dir := t.TempDir()
-	cfg, err := BuildConfig(nodes, nodes[0].Tag, 2080, "127.0.0.1:9090", "topsecret", dir, false)
+	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: nodes[0].Tag}, 2080, "127.0.0.1:9090", "topsecret", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +105,7 @@ func TestBuildConfigTUN(t *testing.T) {
 		nodes = append(nodes, n)
 	}
 	dir := t.TempDir()
-	cfg, err := BuildConfig(nodes, nodes[0].Tag, 2080, "127.0.0.1:9091", "topsecret", dir, true)
+	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: nodes[0].Tag, Tun: true}, 2080, "127.0.0.1:9091", "topsecret", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,5 +117,93 @@ func TestBuildConfigTUN(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("sing-box check (tun) failed:\n%s", out)
+	}
+}
+
+// TestBuildConfigAutoRU validates the auto urltest group and the RU-bypass
+// profile against the real binary and checks the generated layout.
+func TestBuildConfigAutoRU(t *testing.T) {
+	bin := sbPath(t)
+	links := []string{
+		"vless://uuid@1.2.3.4:8443?type=ws&security=tls&sni=cd.example.com&host=cd.example.com&path=%2Fws#WS",
+		"hysteria2://authpass@hy.example.com:36712?sni=hy.example.com#Hy2",
+	}
+	var nodes []*model.Node
+	for _, link := range links {
+		n, err := sub.ParseLink(link)
+		if err != nil {
+			t.Fatalf("ParseLink(%s): %v", link, err)
+		}
+		nodes = append(nodes, n)
+	}
+	dir := t.TempDir()
+	cfg, err := BuildConfig(StartOptions{
+		Nodes:          nodes,
+		ActiveTag:      nodes[0].Tag,
+		Tun:            true,
+		Auto:           true,
+		RoutingProfile: ProfileRUBypass,
+	}, 2080, "127.0.0.1:9092", "topsecret", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(cfgPath, cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "check", "-c", cfgPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sing-box check (auto+ru) failed:\n%s", out)
+	}
+	text := string(cfg)
+	for _, want := range []string{
+		`"type": "urltest"`,
+		`"tag": "auto"`,
+		`"tag": "geoip-ru"`,
+		`"tag": "geosite-gov-ru"`,
+		`"outbound": "direct"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("config missing %s", want)
+		}
+	}
+	// selector default must be the auto group, not the manual node
+	var parsed struct {
+		Outbounds []struct {
+			Type      string   `json:"type"`
+			Tag       string   `json:"tag"`
+			Default   string   `json:"default"`
+			Outbounds []string `json:"outbounds"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	var sel, auto *struct {
+		Type      string   `json:"type"`
+		Tag       string   `json:"tag"`
+		Default   string   `json:"default"`
+		Outbounds []string `json:"outbounds"`
+	}
+	for i := range parsed.Outbounds {
+		switch parsed.Outbounds[i].Tag {
+		case SelectorTag:
+			sel = &parsed.Outbounds[i]
+		case AutoTag:
+			auto = &parsed.Outbounds[i]
+		}
+	}
+	if sel == nil || auto == nil {
+		t.Fatal("selector or auto group missing")
+	}
+	if sel.Default != AutoTag {
+		t.Errorf("selector default = %q, want %q", sel.Default, AutoTag)
+	}
+	if len(sel.Outbounds) == 0 || sel.Outbounds[0] != AutoTag {
+		t.Errorf("auto must be the first selector option, got %v", sel.Outbounds)
+	}
+	if auto.Type != "urltest" || len(auto.Outbounds) != len(nodes) {
+		t.Errorf("bad urltest group: %+v", auto)
 	}
 }

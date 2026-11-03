@@ -51,6 +51,8 @@ type App struct {
 	inputMasked bool // hide characters (sudo password)
 	inputSubmit func(string) tea.Cmd
 
+	autoNow string
+
 	sudoAttempts int
 	sudoBin      string
 }
@@ -70,6 +72,7 @@ func New(st *store.Store, mgr *process.Manager) *App {
 type trafficTickMsg struct {
 	traffic clash.Traffic
 	err     error
+	autoNow string
 }
 
 type delayMsg struct {
@@ -141,11 +144,8 @@ func (a *App) tryStartCore() tea.Msg {
 			return coreStateMsg{false, "", err, false}
 		}
 	}
-	var activeTag string
-	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
-		activeTag = n.Tag
-	}
-	if err := a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag, a.store.TunMode); err != nil {
+	opts := a.startOptions()
+	if err := a.mgr.Start(opts); err != nil {
 		return coreStateMsg{false, "", err, false}
 	}
 	c := clash.New(a.mgr.Controller(), a.mgr.Secret())
@@ -165,10 +165,27 @@ func (a *App) tryStartCore() tea.Msg {
 		}
 		return coreStateMsg{false, "", errors.New("clash api not responding, смотри логи (3)"), false}
 	}
-	if activeTag != "" {
-		_ = c.Select(process.SelectorTag, activeTag)
+	if opts.Auto {
+		_ = c.Select(process.SelectorTag, process.AutoTag)
+	} else if opts.ActiveTag != "" {
+		_ = c.Select(process.SelectorTag, opts.ActiveTag)
 	}
 	return coreStateMsg{true, "", nil, false}
+}
+
+// startOptions assembles the core start request from the store state.
+func (a *App) startOptions() process.StartOptions {
+	var activeTag string
+	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
+		activeTag = n.Tag
+	}
+	return process.StartOptions{
+		Nodes:          deepCopyNodes(a.store.Nodes),
+		ActiveTag:      activeTag,
+		Tun:            a.store.TunMode,
+		Auto:           a.store.AutoMode,
+		RoutingProfile: a.store.RoutingProfile,
+	}
 }
 
 // coreDiedOnPerm reports whether the core died because of missing capabilities.
@@ -194,7 +211,13 @@ func trafficTickCmd(app *App) tea.Cmd {
 			return trafficTickMsg{}
 		}
 		t, err := app.client.Traffic()
-		return trafficTickMsg{traffic: t, err: err}
+		msg := trafficTickMsg{traffic: t, err: err}
+		if p, perr := app.client.Proxies(); perr == nil {
+			if pr, ok := p[process.AutoTag]; ok {
+				msg.autoNow = pr.Now
+			}
+		}
+		return msg
 	})
 }
 
@@ -297,11 +320,7 @@ func (a *App) restartIfRunning() {
 		return
 	}
 	_ = a.mgr.Stop()
-	var activeTag string
-	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
-		activeTag = n.Tag
-	}
-	_ = a.mgr.Start(deepCopyNodes(a.store.Nodes), activeTag, a.store.TunMode)
+	_ = a.mgr.Start(a.startOptions())
 	a.resetClient()
 }
 
@@ -325,6 +344,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case trafficTickMsg:
+		a.autoNow = m.autoNow
 		// the core may die outside of our control (crash, kill, port conflict);
 		// the tick is a cheap watchdog
 		if a.running && !a.mgr.Running() {
@@ -469,6 +489,36 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, a.startCoreCmd()
 		}
 		a.status, a.statusErr = "tun "+state+" (применится при старте)", false
+	case "y":
+		// toggles the urltest "auto" group as the selector target
+		a.store.AutoMode = !a.store.AutoMode
+		_ = a.store.Save()
+		a.autoNow = ""
+		state := "off"
+		if a.store.AutoMode {
+			state = "on"
+		}
+		if a.mgr.Running() {
+			a.status = "auto " + state + " — перезапуск ядра…"
+			return a, a.startCoreCmd()
+		}
+		a.status, a.statusErr = "auto "+state+" (применится при старте)", false
+	case "p":
+		// cycles the routing profile: global -> RU bypass
+		a.store.RoutingProfile++
+		if a.store.RoutingProfile > process.ProfileRUBypass {
+			a.store.RoutingProfile = process.ProfileGlobal
+		}
+		_ = a.store.Save()
+		name := "global"
+		if a.store.RoutingProfile == process.ProfileRUBypass {
+			name = "RU→direct"
+		}
+		if a.mgr.Running() {
+			a.status = "маршрутизация " + name + " — перезапуск ядра…"
+			return a, a.startCoreCmd()
+		}
+		a.status, a.statusErr = "маршрутизация "+name+" (применится при старте)", false
 	case "s":
 		if a.mgr.Running() {
 			return a, a.stopCoreCmd()

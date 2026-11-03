@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/v0dol4zik/ratbox/internal/core/process"
 )
 
 func (a *App) View() string {
@@ -37,7 +39,12 @@ func (a *App) renderHeader() string {
 		stateStyle = okStyle
 	}
 	active := "—"
-	if n := a.store.Node(a.store.ActiveNodeID); n != nil {
+	if a.store.AutoMode {
+		active = "auto"
+		if a.autoNow != "" {
+			active = "auto → " + a.autoNow
+		}
+	} else if n := a.store.Node(a.store.ActiveNodeID); n != nil {
 		active = n.Tag
 	}
 	parts := []string{
@@ -47,6 +54,12 @@ func (a *App) renderHeader() string {
 	}
 	if a.store.TunMode {
 		parts = append(parts, warnStyle.Render("tun"))
+	}
+	if a.store.AutoMode {
+		parts = append(parts, okStyle.Render("auto"))
+	}
+	if a.store.RoutingProfile == process.ProfileRUBypass {
+		parts = append(parts, warnStyle.Render("RU→direct"))
 	}
 	parts = append(parts, "active: "+active)
 	if a.running {
@@ -202,11 +215,11 @@ func (a *App) renderFooter() string {
 	var keys string
 	switch a.view {
 	case ViewNodes:
-		keys = "↑↓ select · Enter set active · t test · T test all · n add link · d remove · s start/stop"
+		keys = "↑↓ select · Enter set active · t test · T test all · n add link · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewSubs:
-		keys = "↑↓ select · a add sub · u update · d remove · s start/stop"
+		keys = "↑↓ select · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewLogs:
-		keys = "j/k,g/G scroll · s start/stop"
+		keys = "j/k,g/G scroll · m tun · y auto · p profile · s start/stop"
 	}
 	keys += " · 1/2/3 tabs · q quit"
 	var status string
