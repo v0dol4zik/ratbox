@@ -65,7 +65,6 @@ type App struct {
 	setIdx       int // settings cursor
 	sudoAttempts int
 	sudoBin      string
-	cmdMode      bool // ":" command line
 }
 
 func New(st *store.Store, mgr *process.Manager) *App {
@@ -329,143 +328,6 @@ func (a *App) editSetting(idx int) tea.Cmd {
 			}
 			return func() tea.Msg { return opDoneMsg{text: "core binary updated", err: nil} }
 		})
-	}
-	return nil
-}
-
-// commandMatches returns the commands starting with the typed prefix.
-func commandMatches(prefix string) []string {
-	p := strings.ToLower(strings.TrimSpace(prefix))
-	if p == "" {
-		return nil
-	}
-	var out []string
-	for _, c := range commandList {
-		if strings.HasPrefix(c, p) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// commonPrefix returns the longest prefix shared by all strings.
-func commonPrefix(list []string) string {
-	if len(list) == 0 {
-		return ""
-	}
-	p := list[0]
-	for _, s := range list[1:] {
-		for !strings.HasPrefix(s, p) && len(p) > 0 {
-			p = p[:len(p)-1]
-		}
-	}
-	return p
-}
-
-// beginCommandInput opens the ":" command line, vim-style.
-func (a *App) beginCommandInput() {
-	a.beginInput(":", nil)
-	a.cmdMode = true
-}
-
-// command actions; names are resolution targets for the ":" input
-type cmdAction int
-
-const (
-	actNone cmdAction = iota
-	actSettings
-	actQuit
-	actSave
-	actHelp
-)
-
-// commandList is the set of ":" commands known to the autocompleter.
-var commandList = []string{
-	"config", "settings", "cfg", "conf", "set",
-	"q", "quit", "qa", "qall", "w", "save", "h", "help",
-}
-
-func commandAction(name string) cmdAction {
-	switch name {
-	case "config", "settings", "cfg", "conf", "set":
-		return actSettings
-	case "q", "quit", "qa", "qall":
-		return actQuit
-	case "w", "save":
-		return actSave
-	case "h", "help":
-		return actHelp
-	}
-	return actNone
-}
-
-// resolveCommand maps the typed prefix to an action, vim-style: if every
-// matching command leads to the same action, no further typing is needed.
-func resolveCommand(input string) (cmdAction, error) {
-	cmd := strings.ToLower(strings.TrimSpace(input))
-	if cmd == "" {
-		return actNone, nil
-	}
-	// exact name wins instantly
-	act := commandAction(cmd)
-	if act != actNone {
-		return act, nil
-	}
-	var (
-		found   cmdAction
-		shown   string
-		matched bool
-	)
-	for _, name := range commandList {
-		if strings.HasPrefix(name, cmd) {
-			a := commandAction(name)
-			if !matched {
-				found, matched = a, true
-			} else if a != found {
-				return actNone, fmt.Errorf("ambiguous :%s — try: %s", cmd, shown)
-			}
-			if shown == "" {
-				shown = name
-			} else {
-				shown += " " + name
-			}
-		}
-	}
-	if !matched {
-		return actNone, fmt.Errorf("no such command :%s", cmd)
-	}
-	return found, nil
-}
-
-// runCommand executes a ":" command. Runs inline (from the Update loop),
-// so model mutations here are race-free.
-func (a *App) runCommand(raw string) tea.Cmd {
-	cmd := strings.TrimSpace(strings.ToLower(raw))
-	act, err := resolveCommand(cmd)
-	if err != nil {
-		a.status, a.statusErr = err.Error(), true
-		return nil
-	}
-	switch act {
-	case actNone:
-		return nil
-	case actSettings:
-		a.view = ViewSettings
-		a.setIdx = 0
-		return nil
-	case actQuit:
-		_ = a.mgr.Stop()
-		return tea.Quit
-	case actSave:
-		if saveErr := a.store.Save(); saveErr != nil {
-			a.status, a.statusErr = "save: "+saveErr.Error(), true
-		} else {
-			a.status, a.statusErr = "store saved", false
-		}
-		return nil
-	case actHelp:
-		a.status, a.statusErr = "commands: config/settings, q (quit), w (save)", false
-		return nil
 	}
 	return nil
 }
@@ -887,10 +749,6 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			raw := a.inputBuf
 			a.inputActive = false
 			a.inputBuf = "" // drop the secret from memory asap
-			if a.cmdMode {
-				a.cmdMode = false
-				return a, a.runCommand(raw)
-			}
 			cmd := a.inputSubmit(raw)
 			a.inputSubmit = nil
 			return a, cmd
@@ -904,14 +762,7 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.inputBuf = string(rs[:len(rs)-1])
 			}
 			return a, nil
-		case tea.KeyTab:
-			// complete the command to the longest common prefix of matches
-			if a.cmdMode {
-				if m := commandMatches(a.inputBuf); len(m) > 0 {
-					a.inputBuf = commonPrefix(m)
-				}
-			}
-			return a, nil
+
 		default:
 			if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
 				a.inputBuf += string(k.Runes)
@@ -939,14 +790,18 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		a.view = (a.view + 1) % 4
 		return a, nil
+	case "left":
+		a.view = (a.view + 3) % 4
+		return a, nil
+	case "right":
+		a.view = (a.view + 1) % 4
+		return a, nil
 	case "m":
 		return a, a.toggleTun()
 	case "y":
 		return a, a.toggleAuto()
 	case "p":
 		return a, a.cycleProfile()
-	case ":":
-		a.beginCommandInput()
 	case "s":
 		if a.mgr.Running() {
 			return a, a.stopCoreCmd()

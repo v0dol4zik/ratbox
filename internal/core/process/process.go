@@ -1,4 +1,4 @@
-// Package process manages external core binaries (sing-box, xray).
+// Package process manages the external sing-box core.
 // ratbox generates the config, supervises the process and talks to its
 // clash-api for node switching and traffic stats.
 package process
@@ -244,10 +244,8 @@ func resolveBinary(cfgPath string) (string, error) {
 		}
 		return "", fmt.Errorf("core binary not found at %s", cfgPath)
 	}
-	for _, name := range []string{"sing-box", "xray"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
-		}
+	if p, err := exec.LookPath("sing-box"); err == nil {
+		return p, nil
 	}
 	return "", fmt.Errorf("sing-box binary not found: install sing-box or set core_binary in the store")
 }

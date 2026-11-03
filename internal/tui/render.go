@@ -136,21 +136,6 @@ func (a *App) renderSettings(height int) string {
 	return strings.Join(lines, "\n")
 }
 
-// actionName renders what a command will do, for the live hint.
-func actionName(act cmdAction) string {
-	switch act {
-	case actSettings:
-		return "settings"
-	case actQuit:
-		return "quit"
-	case actSave:
-		return "save"
-	case actHelp:
-		return "help"
-	}
-	return ""
-}
-
 func onOff(b bool) string {
 	if b {
 		return okStyle.Render("on")
@@ -282,15 +267,7 @@ func (a *App) renderFooter() string {
 		if a.inputMasked {
 			shown = strings.Repeat("*", len([]rune(a.inputBuf)))
 		}
-		line := fmt.Sprintf("\n %s%s▏", titleStyle.Render(a.inputPrompt), shown)
-		if a.cmdMode && !a.inputMasked && strings.TrimSpace(a.inputBuf) != "" {
-			if act, _ := resolveCommand(a.inputBuf); act != actNone {
-				line += " " + okStyle.Render("→ "+actionName(act))
-			} else if m := commandMatches(a.inputBuf); len(m) > 0 {
-				line += " " + dimStyle.Render(strings.Join(m, " "))
-			}
-		}
-		return line
+		return fmt.Sprintf("\n %s%s▏", titleStyle.Render(a.inputPrompt), shown)
 	}
 	var keys string
 	switch a.view {
@@ -299,11 +276,11 @@ func (a *App) renderFooter() string {
 	case ViewSubs:
 		keys = "↑↓ select · a add sub · u update · d remove · m tun · y auto · p profile · s start/stop"
 	case ViewLogs:
-		keys = "j/k,g/G scroll · s start/stop · : commands"
+		keys = "j/k,g/G scroll · s start/stop"
 	case ViewSettings:
-		keys = "↑↓ select · enter/space apply · esc back · : commands"
+		keys = "↑↓ select · enter/space apply · esc back"
 	}
-	keys += " · 1/2/3 tabs · q quit"
+	keys += " · ←→ tabs · q quit"
 	var status string
 	if a.status != "" {
 		if a.statusErr {

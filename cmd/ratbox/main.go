@@ -1,4 +1,4 @@
-// ratbox — a CLI/TUI proxy client for sing-box and xray cores.
+// ratbox — a CLI/TUI proxy client for the sing-box core.
 package main
 
 import (
