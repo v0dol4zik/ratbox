@@ -63,8 +63,10 @@ here in the same commit.
         ownership protection. sudo/resolved are mocked inside the namespace
 - [x] correct v0.6.11 overclaim: fwmark rules alone do not prove packet capture
         or the root cause of all failures. Details in TUN_RESEARCH.md
-- [ ] actual host resolved/sudo integration, browser and Telegram media behavior
-        still need validation; no live routing or foreign VPN was changed here
+- [x] user verified v0.6.12 TUN on the real host: Telegram loads, messages and
+        photos send successfully, YouTube plays at 1080p. Initial lag subsided;
+        its cause is unmeasured. This is functional user confirmation, not a
+        throughput benchmark, DNS-leak audit or long-duration stability test
 
 ## v0.6.11 "Detect nftables OUTPUT capture by another client"
 

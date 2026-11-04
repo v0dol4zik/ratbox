@@ -119,7 +119,9 @@ an explicit startup failure; a failed post-start DNS setup stops the core.
 The namespace test uses actual physical-uplink UDP DNS and proxy-carried HTTPS
 DNS with a private trusted test certificate. `sudo` and `resolvectl` are mocked
 inside the namespace (no resolved daemon runs there); real nft ownership,
-routing, proxy DNS, bulk transfers and cleanup are exercised. **Actual host
-resolved integration, browser/media behavior and throughput still need live
-verification.** Throne GPL source was inspected as a reference, not copied into
-this MIT codebase.
+routing, proxy DNS, bulk transfers and cleanup are exercised. The user then
+confirmed v0.6.12 TUN works on the real host: Telegram loads, messages and photos
+send, and YouTube plays at 1080p. Initial lag subsided; its cause was not measured.
+This confirms those application flows, not a DNS-leak audit, quantified throughput
+or long-duration stability. Throne GPL source was inspected as a reference, not
+copied into this MIT codebase.
