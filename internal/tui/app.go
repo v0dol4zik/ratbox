@@ -250,6 +250,10 @@ func (a *App) tryStartCore(opts process.StartOptions, tun bool) tea.Msg {
 		if strings.Contains(diagnostic, "warning") {
 			text = diagnostic
 		}
+		if capture := a.mgr.TUNForeignCaptureDiagnostic(); capture != "" {
+			a.mgr.LogDiagnostic(capture)
+			text = capture
+		}
 	}
 	return coreStateMsg{true, text, nil, false}
 }

@@ -43,6 +43,22 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.11 "Detect nftables OUTPUT capture by another client"
+
+- [x] live-host repro: with ThroneCore (auto_redirect) running, mixed of the
+        same node serves 1 MiB fine while TUN HTTPS fails with TLS unexpected
+        eof; the completed ingress probe is absent from ratbox connections —
+        IPv4 TCP is captured by the other client's nftables OUTPUT redirect and
+        its fwmark 0x2023/0x2024 rules (observed active on the host)
+- [x] root cause documented in TUN_RESEARCH.md; sing-box 1.14 hardcodes the
+        shared sing-box nft table and default marks, so the first auto_redirect
+        client wins and a second TUN client cannot receive local TCP
+- [x] ratbox now detects the mark-mode rules and warns in status + log;
+        read-only, never blocks or deletes foreign rules
+- [x] existing through-TUN diagnostics extended: 1 MiB upload/download with
+        per-phase timings, popular-site check and system resolver timings,
+        with mixed-path equivalents for the same node
+
 ## Linux TUN upstream research (after v0.6.10)
 
 - [x] inspect official sing-box guidance, versioned Throne 1.2.4 generator and

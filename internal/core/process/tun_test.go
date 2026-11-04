@@ -119,3 +119,34 @@ func TestTUNConfigIsolation(t *testing.T) {
 		t.Fatal("DNS must precede private-address bypass")
 	}
 }
+
+func TestTunForeignCaptureDetection(t *testing.T) {
+	// Real host output observed while ThroneCore with auto_redirect was
+	// running next to ratbox.
+	const withThrone = `0:	from all lookup local
+1:	from all lookup 60079926
+9000:	from all fwmark 0x2024 goto 9002
+9001:	from all fwmark 0x2023 lookup 2022
+9002:	from all nop
+12300:	from all to 172.28.123.0/30 lookup 12334
+32766:	from all lookup main
+32767:	from all lookup default
+32768:	from all lookup 2022
+`
+	if got := tunForeignCapture(withThrone); !strings.Contains(got, "auto_redirect") {
+		t.Fatalf("expected capture warning, got %q", got)
+	}
+	const clean = `0:	from all lookup local
+12300:	from all to 172.28.123.0/30 lookup 12334
+12301:	from all lookup 12334 suppress_prefixlength 0
+32766:	from all lookup main
+32767:	from all lookup default
+`
+	if got := tunForeignCapture(clean); got != "" {
+		t.Fatalf("false positive on clean rules: %q", got)
+	}
+	// Unrelated fwmark users must not be reported.
+	if got := tunForeignCapture("100: from all fwmark 0x1 lookup 100\n"); got != "" {
+		t.Fatalf("false positive on unrelated fwmark: %q", got)
+	}
+}

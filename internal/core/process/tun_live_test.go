@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,5 +144,40 @@ func TestLiveTUN(t *testing.T) {
 		if after.DownloadTotal <= before.DownloadTotal {
 			t.Errorf("TUN request did not register in this core: before=%+v after=%+v; another client may be intercepting traffic", before, after)
 		}
+	}
+
+	// Stage 2: bulk transfer + DNS through the running TUN itself. Tiny 204
+	// checks do not reflect media browsing; measure a real 1 MiB POST/GET with
+	// per-phase timings plus a resolver query, and mixed-path equivalents for
+	// comparison. All bytes are locally generated, never user files.
+	upload := filepath.Join(t.TempDir(), "up")
+	if err := os.WriteFile(upload, make([]byte, 1024*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	curlTiming := func(label, proxy string, args ...string) {
+		base := []string{"--noproxy", "", "-sS", "--max-time", "20", "-o", "/dev/null",
+			"-w", "%{http_code} dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} down=%{speed_download} up=%{speed_upload}"}
+		if proxy != "" {
+			base = append(base, "--proxy", proxy)
+		}
+		start := time.Now()
+		argv := append([]string{}, base...)
+		argv = append(argv, args...)
+		cmd := exec.Command("curl", argv...)
+		out, err := cmd.CombinedOutput()
+		t.Logf("%s: %s (%v, elapsed %v)", label, strings.TrimSpace(string(out)), err, time.Since(start))
+	}
+	mixed := fmt.Sprintf("http://127.0.0.1:%d", mgr.cfg.MixedPort)
+	for _, path := range []struct{ label, proxy string }{
+		{"tun", ""}, {"mixed", mixed},
+	} {
+		curlTiming("1MiB download/"+path.label, path.proxy, "https://speed.cloudflare.com/__down?bytes=1048576")
+		curlTiming("1MiB upload/"+path.label, path.proxy, "-X", "POST", "--data-binary", "@"+upload, "https://speed.cloudflare.com/__up")
+		curlTiming("popular site/"+path.label, path.proxy, "https://www.google.com/generate_204")
+	}
+	for _, host := range []string{"www.youtube.com", "github.com", "en.wikipedia.org", "www.cloudflare.com"} {
+		start := time.Now()
+		out, err := exec.Command("getent", "ahostsv4", host).CombinedOutput()
+		t.Logf("dns %s via system resolver: %v (%v): %s", host, err, time.Since(start), strings.TrimSpace(string(out)))
 	}
 }

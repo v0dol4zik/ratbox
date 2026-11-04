@@ -44,6 +44,40 @@ for a 2 MiB upload plus echo in the observed run. These are regression checks,
 not general performance benchmarks: no Internet, real proxy encryption,
 WebSocket/CDN, packet loss, or Telegram is present.
 
+## Root cause of the coexistence failure (confirmed 2026-11-04)
+
+While ThroneCore runs with `auto_redirect` enabled, it installs sing-tun
+mark-mode policy rules on the host:
+
+```
+9000: from all fwmark 0x2024 goto 9002
+9001: from all fwmark 0x2023 lookup 2022
+```
+
+and an nftables OUTPUT redirect that captures **all unmarked local TCP before
+it can reach any other TUN device**. Consequences measured on the live host:
+
+- ratbox mixed inbound through the same node: 1 MiB POST/GET `200 OK` (the node itself is fine);
+- ratbox TUN: HTTPS requests die with `TLS unexpected eof`, while only IPv6
+  tun connections appear in ratbox logs; the completed ingress probe is
+  **not observable in ratbox** — its IPv4 connection was captured upstream;
+- with Throne stopped, ratbox TUN previously passed messages and the ingress
+  probe (`tun ingress ok` header).
+
+Two sing-box clients using TUN on one host cannot share this mechanism: the
+first client with an active auto_redirect wins, and sing-box 1.14 hardcodes
+the shared nftables table name `sing-box` and the default marks. ratbox does
+**not** enable auto_redirect in production (it would delete another client's
+shared table). Instead ratbox detects the capture and warns:
+
+```
+another VPN client with sing-box auto_redirect is active and captures local
+TCP before ratbox TUN; stop the other client, then restart ratbox tun
+```
+
+The practical rule: run one TUN VPN client at a time. When testing ratbox TUN,
+fully stop Throne/ThroneCore first.
+
 ## What this does and does not establish
 
 - The previous firewall/TCP failure has a reproducer and a working gvisor path.

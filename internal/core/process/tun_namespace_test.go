@@ -57,6 +57,7 @@ func TestTUNNamespace(t *testing.T) {
 		{"input_drop_mixed_stack", "mixed", "1"},
 		{"input_drop_ratbox_default", "", "1"},
 		{"input_drop_redirect_system", "redirect-system", "1"},
+		{"loose_gvisor", "loose", ""},
 		{"wan_gvisor", "", "wan"},
 		{"wan_redirect_system", "redirect-system", "wan"},
 	} {
@@ -173,6 +174,10 @@ func testNamespaceClient(t *testing.T) {
 	opts := StartOptions{Tun: true, TunStack: os.Getenv("RATBOX_NETNS_STACK"), ActiveTag: "fake-proxy", Nodes: []*model.Node{{Tag: "fake-proxy", Outbound: json.RawMessage(`{"type":"http","server":"198.18.0.2","server_port":18081}`)}}}
 	if opts.TunStack == "redirect-system" {
 		opts.TunStack, opts.TunAutoRedirect = "system", true
+	}
+	loose := opts.TunStack == "loose"
+	if loose {
+		opts.TunStack, opts.TunStrictRoute = "gvisor", &[]bool{false}[0]
 	}
 	if err := mgr.Start(opts); err != nil {
 		t.Fatal(err)

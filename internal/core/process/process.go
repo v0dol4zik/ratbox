@@ -153,6 +153,7 @@ type StartOptions struct {
 	Tun             bool
 	TunStack        string // empty uses gvisor; explicit override for diagnostics
 	TunAutoRedirect bool   // diagnostic opt-in; owns the core's shared nftables table
+	TunStrictRoute  *bool  // nil keeps strict routing on; diagnostics may disable it
 	Auto            bool   // urltest group is the selector default
 	RoutingProfile  int    // ProfileGlobal | ProfileRUBypass
 	ServicePort     int    // loopback port of the always-direct service inbound
@@ -406,7 +407,7 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 			"auto_route":           true,
 			"iproute2_table_index": TunTableIndex,
 			"iproute2_rule_index":  TunRuleIndex,
-			"strict_route":         true,
+			"strict_route":         tunStrictRoute(opts.TunStrictRoute),
 			"dns_mode":             "disabled",
 		}}, inbounds...)
 		// The core's implicit mixed/system stack reinjects TCP into Linux
@@ -475,6 +476,16 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 		},
 	}
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// tunStrictRoute keeps the long-time strict default unless a diagnostic
+// override is provided. Semantics stay explicit rather than defaulting on a
+// zero bool, so unrelated options can never silently loosen routing.
+func tunStrictRoute(opt *bool) bool {
+	if opt != nil {
+		return *opt
+	}
+	return true
 }
 
 // ResolveBinaryPath resolves the core binary location (store path, or PATH lookup).

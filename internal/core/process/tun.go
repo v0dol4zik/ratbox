@@ -37,6 +37,34 @@ func tunRouteDiagnostic(data []byte) string {
 	return "TUN kernel route: 1.1.1.1 via " + TunName + " (connectivity not verified)"
 }
 
+// TUNForeignCaptureDiagnostic reports whether another sing-box-style client
+// (e.g. Throne with auto_redirect) is capturing local TCP in nftables OUTPUT
+// via fwmark policy rules. Such a client steals unmarked connections before
+// they can reach ratbox's TUN: coexistence breaks routing, not just speed.
+// Read-only inspection; nothing is modified or blocked.
+func (m *Manager) TUNForeignCaptureDiagnostic() string {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ip", "rule", "show").Output()
+	if err != nil {
+		return ""
+	}
+	return tunForeignCapture(string(out))
+}
+
+// tunForeignCapture scans ip-rule output for the sing-tun auto_redirect
+// mark-mode pattern (fwmark rules of an auto-redirect client). Only the
+// known fwmark/mask pair of sing-box defaults is reported; generic marks are
+// ignored to avoid false accusations against unrelated software.
+func tunForeignCapture(rules string) string {
+	if !strings.Contains(rules, "fwmark 0x2023") && !strings.Contains(rules, "fwmark 0x2024") {
+		return ""
+	}
+	// Our own core does not enable auto_redirect in production, so any such
+	// rule set belongs to another client that also owns the shared nft table.
+	return "another VPN client with sing-box auto_redirect is active and captures local TCP before ratbox TUN; stop the other client, then restart ratbox tun"
+}
+
 // LogDiagnostic appends a supervisor diagnostic to the core log ring.
 func (m *Manager) LogDiagnostic(text string) {
 	m.mu.Lock()
