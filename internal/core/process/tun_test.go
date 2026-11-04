@@ -133,7 +133,7 @@ func TestTunForeignCaptureDetection(t *testing.T) {
 32767:	from all lookup default
 32768:	from all lookup 2022
 `
-	if got := tunForeignCapture(withThrone); !strings.Contains(got, "auto_redirect") {
+	if got := tunForeignCapture(withThrone); !strings.Contains(got, "do not prove capture") {
 		t.Fatalf("expected capture warning, got %q", got)
 	}
 	const clean = `0:	from all lookup local

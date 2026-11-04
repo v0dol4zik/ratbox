@@ -34,9 +34,17 @@ All routing/firewall changes in this test are inside disposable namespaces.
 | gvisor, no auto-redirect | yes | IPv4/IPv6 payloads and 2 MiB uploads/echoes pass |
 | system + auto-redirect | yes | IPv4/IPv6 payloads and 2 MiB uploads/echoes pass |
 
-The last configuration is a **test-only opt-in**, not a new production default.
+Since v0.6.12 the TUI uses `system + auto_redirect`, MTU 1500 and
+`strict_route=false`, following the working Linux layout in Throne. Before
+launch, ratbox reads nftables through bounded `sudo -n nft list tables` and
+refuses an existing `inet sing-box` table rather than letting the core delete
+it. This is a preflight, not an atomic lock against another application starting
+at exactly the same time: do not launch two auto-redirect clients concurrently.
+No firewall table is flushed by ratbox.
+
 Tests include ingress attribution, exact payload comparison, per-transfer API
-upload/download growth, clean shutdown and successful restart.
+upload/download growth, clean shutdown and successful restart. They also verify
+that an existing shared table survives a refused start.
 
 Additional `wan_gvisor` and `wan_redirect_system` cases add netem delay of 25 ms
 and a 20 Mbit/s rate limit in each uplink direction. Both took about 2.15 seconds
@@ -44,7 +52,7 @@ for a 2 MiB upload plus echo in the observed run. These are regression checks,
 not general performance benchmarks: no Internet, real proxy encryption,
 WebSocket/CDN, packet loss, or Telegram is present.
 
-## Root cause of the coexistence failure (confirmed 2026-11-04)
+## Correction: earlier coexistence diagnosis was overstated
 
 While ThroneCore runs with `auto_redirect` enabled, it installs sing-tun
 mark-mode policy rules on the host:
@@ -54,29 +62,23 @@ mark-mode policy rules on the host:
 9001: from all fwmark 0x2023 lookup 2022
 ```
 
-and an nftables OUTPUT redirect that captures **all unmarked local TCP before
-it can reach any other TUN device**. Consequences measured on the live host:
+These rules are consistent with auto-redirect but do **not** establish which
+nftables rules are active or that they intercepted a particular connection.
+The earlier claim of a proven root cause based on marks alone was incorrect.
+Observations on the live host:
 
-- ratbox mixed inbound through the same node: 1 MiB POST/GET `200 OK` (the node itself is fine);
+- ratbox mixed inbound through the same node: 1 MiB POST/GET `200 OK`;
 - ratbox TUN: HTTPS requests die with `TLS unexpected eof`, while only IPv6
   tun connections appear in ratbox logs; the completed ingress probe is
-  **not observable in ratbox** — its IPv4 connection was captured upstream;
+  **not observable in ratbox** — the destination/path was not attributed;
 - with Throne stopped, ratbox TUN previously passed messages and the ingress
   probe (`tun ingress ok` header).
 
-Two sing-box clients using TUN on one host cannot share this mechanism: the
-first client with an active auto_redirect wins, and sing-box 1.14 hardcodes
-the shared nftables table name `sing-box` and the default marks. ratbox does
-**not** enable auto_redirect in production (it would delete another client's
-shared table). Instead ratbox detects the capture and warns:
-
-```
-another VPN client with sing-box auto_redirect is active and captures local
-TCP before ratbox TUN; stop the other client, then restart ratbox tun
-```
-
-The practical rule: run one TUN VPN client at a time. When testing ratbox TUN,
-fully stop Throne/ThroneCore first.
+The hardcoded shared nftables table is an independently verified ownership
+hazard, not proof that it explains all prior failures. v0.6.12 therefore checks
+actual table existence before enabling auto-redirect and changes the old mark
+warning to an explicitly uncertain hint. No conclusion about successful host
+connectivity follows from either the marks or a kernel route lookup.
 
 ## What this does and does not establish
 
@@ -94,12 +96,30 @@ fully stop Throne/ThroneCore first.
   checking/coordination or an upstream configurable unique table name. Never
   delete foreign rules to make startup succeed.
 
-## Next discriminating check
+## DNS integration in v0.6.12
 
-With the **same node**, compare Telegram using ratbox TUN versus Telegram's
-built-in SOCKS5 client pointing to ratbox's mixed inbound `127.0.0.1:12334`
-(with ratbox TUN off for the latter check). The app/core must remain running.
-Disable the Telegram-specific proxy after the comparison. Record complete core
-errors at the failed media transfer; `tun ingress ok` alone is not a media test.
+Throne separates underlying/bootstrap DNS from application DNS. Its patched
+libbox exposes an `underlying` transport that stock sing-box 1.14.4 does not.
+ratbox instead discovers the main-table uplink's DNS before starting the core
+and configures a direct UDP bootstrap resolver. A loopback resolved stub is
+never used as bootstrap after pointing the system DNS at TUN.
 
-This is a diagnostic comparison, not a proposed permanent SOCKS-only workaround.
+Application DNS to `172.28.123.2:53` is hijacked by the core and resolved via
+DoH through the selected proxy. After the core API and selector are ready,
+ratbox uses `sudo -n resolvectl` to configure DNS, `~.` and default-route on
+**ratbox0 only**. Native core DNS configuration remains disabled to avoid
+uncontrolled polkit prompts. No global resolv.conf or foreign interface is
+modified. Link removal on stop/crash removes link-scoped resolved settings.
+
+The existing masked sudo/setcap flow establishes sudo authorization; it may be
+requested again when sudo's normal timestamp expires. No password, helper,
+sudoers entry or polkit rule is installed. Missing tools/authorization/DNS cause
+an explicit startup failure; a failed post-start DNS setup stops the core.
+
+The namespace test uses actual physical-uplink UDP DNS and proxy-carried HTTPS
+DNS with a private trusted test certificate. `sudo` and `resolvectl` are mocked
+inside the namespace (no resolved daemon runs there); real nft ownership,
+routing, proxy DNS, bulk transfers and cleanup are exercised. **Actual host
+resolved integration, browser/media behavior and throughput still need live
+verification.** Throne GPL source was inspected as a reference, not copied into
+this MIT codebase.

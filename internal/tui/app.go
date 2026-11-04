@@ -213,7 +213,7 @@ func (a *App) tryStartCore(opts process.StartOptions, tun bool) tea.Msg {
 		}
 	}
 	if err := a.mgr.Start(opts); err != nil {
-		return coreStateMsg{false, "", err, false}
+		return coreStateMsg{false, "", err, errors.Is(err, process.ErrTUNAdminRequired)}
 	}
 	c := clash.New(a.mgr.Controller(), a.mgr.Secret())
 	// wait until the clash api is up (max ~5s)
@@ -243,14 +243,23 @@ func (a *App) tryStartCore(opts process.StartOptions, tun bool) tea.Msg {
 		_ = a.mgr.Stop()
 		return coreStateMsg{false, "", fmt.Errorf("select node: %w", selectErr), false}
 	}
+	if opts.TunSystemSetup {
+		if err := a.mgr.ConfigureTUNDNS(); err != nil {
+			_ = a.mgr.Stop()
+			return coreStateMsg{false, "", err, false}
+		}
+	}
 	text := ""
 	if tun {
 		diagnostic := a.mgr.TUNRouteDiagnostic()
+		if opts.TunAutoRedirect {
+			diagnostic = "TUN uses sing-box auto_redirect + system stack; kernel route lookup alone does not describe nftables redirection"
+		}
 		a.mgr.LogDiagnostic(diagnostic)
 		if strings.Contains(diagnostic, "warning") {
 			text = diagnostic
 		}
-		if capture := a.mgr.TUNForeignCaptureDiagnostic(); capture != "" {
+		if capture := a.mgr.TUNForeignCaptureDiagnostic(); !opts.TunAutoRedirect && capture != "" {
 			a.mgr.LogDiagnostic(capture)
 			text = capture
 		}
@@ -593,11 +602,15 @@ func (a *App) startOptions() process.StartOptions {
 		nodes = deepCopyNodes(a.store.Nodes)
 	}
 	return process.StartOptions{
-		Nodes:          nodes,
-		ActiveTag:      activeTag,
-		Tun:            a.store.TunMode,
-		Auto:           a.store.AutoMode,
-		RoutingProfile: a.store.RoutingProfile,
+		Nodes:           nodes,
+		ActiveTag:       activeTag,
+		Tun:             a.store.TunMode,
+		TunStack:        "system",
+		TunAutoRedirect: a.store.TunMode,
+		TunSystemSetup:  a.store.TunMode,
+		TunStrictRoute:  new(bool),
+		Auto:            a.store.AutoMode,
+		RoutingProfile:  a.store.RoutingProfile,
 	}
 }
 
@@ -864,7 +877,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				bin = "<sing-box>"
 			}
 		}
-		a.beginPasswordInput("sudo password (setcap, Esc to cancel): ", func(pw string) tea.Cmd {
+		a.beginPasswordInput("sudo password (TUN setup, Esc to cancel): ", func(pw string) tea.Cmd {
 			return a.sudoSetcapCmd(pw, bin)
 		})
 		return a, nil
@@ -991,7 +1004,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case capsGrantedMsg:
-		a.status, a.statusErr = "caps granted — starting core…", false
+		a.status, a.statusErr = "TUN authorization granted — starting core…", false
 		a.starting = true
 		return a, a.startCoreCmd()
 
@@ -1009,7 +1022,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.sudoAttempts < 3 {
 				a.sudoAttempts++
 				a.status, a.statusErr = "wrong password, try again", true
-				a.beginPasswordInput("sudo password (setcap, Esc to cancel): ", func(pw string) tea.Cmd {
+				a.beginPasswordInput("sudo password (TUN setup, Esc to cancel): ", func(pw string) tea.Cmd {
 					return a.sudoSetcapCmd(pw, a.sudoBin)
 				})
 				return a, nil

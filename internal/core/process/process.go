@@ -152,7 +152,9 @@ type StartOptions struct {
 	ActiveTag       string
 	Tun             bool
 	TunStack        string // empty uses gvisor; explicit override for diagnostics
-	TunAutoRedirect bool   // diagnostic opt-in; owns the core's shared nftables table
+	TunAutoRedirect bool   // core-managed Linux TCP redirect
+	TunSystemSetup  bool   // preflight shared nft table and discover physical-uplink DNS
+	BootstrapDNS    string // physical resolver, never resolved's VPN default
 	TunStrictRoute  *bool  // nil keeps strict routing on; diagnostics may disable it
 	Auto            bool   // urltest group is the selector default
 	RoutingProfile  int    // ProfileGlobal | ProfileRUBypass
@@ -181,6 +183,18 @@ func (m *Manager) Start(opts StartOptions) error {
 	if opts.Tun {
 		if err := checkTUNConflicts("/sys/class/net"); err != nil {
 			return err
+		}
+		if opts.TunAutoRedirect {
+			if err := preflightRedirect(); err != nil {
+				return err
+			}
+		}
+		if opts.TunSystemSetup {
+			dns, err := discoverBootstrapDNS()
+			if err != nil {
+				return err
+			}
+			opts.BootstrapDNS = dns
 		}
 	}
 
@@ -393,11 +407,15 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 		{"action": "sniff"},
 	}
 	route["default_domain_resolver"] = "dns-local"
+	if opts.BootstrapDNS != "" {
+		dns["servers"] = []map[string]any{{"type": "udp", "tag": "dns-local", "server": opts.BootstrapDNS}}
+	}
 
 	if tun {
 		// Avoid native systemd-resolved configuration and its polkit prompts.
-		// Explicit DNS packets entering the TUN still use the hijack rule;
-		// the system stub/LAN resolver is not automatically redirected.
+		// Explicit DNS packets entering TUN use the hijack rule. The TUI
+		// applies per-link resolved DNS after startup, using bounded sudo -n
+		// commands rather than asynchronous polkit prompts from the core.
 		inbounds = append([]map[string]any{{
 			"type":                 "tun",
 			"tag":                  "tun-in",
@@ -420,6 +438,12 @@ func BuildConfig(opts StartOptions, mixedPort int, controller, secret, dataDir s
 		inbounds[0]["stack"] = stack
 		if opts.TunAutoRedirect {
 			inbounds[0]["auto_redirect"] = true
+			inbounds[0]["auto_redirect_input_mark"] = "0x7261"
+			inbounds[0]["auto_redirect_output_mark"] = "0x7262"
+			inbounds[0]["auto_redirect_reset_mark"] = "0x7263"
+			inbounds[0]["auto_redirect_nfqueue"] = 123
+			inbounds[0]["auto_redirect_iproute2_fallback_rule_index"] = 32769
+			inbounds[0]["route_exclude_address"] = []string{"127.0.0.0/8", "255.255.255.255/32"}
 		}
 		// DNS must be handled before the private-IP bypass (e.g. LAN DNS).
 		rules = append(rules, map[string]any{"protocol": "dns", "action": "hijack-dns"})

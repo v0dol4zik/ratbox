@@ -43,6 +43,29 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.12 "Adopt the upstream Linux TUN layout and explicit DNS lifecycle"
+
+- [x] use Throne 1.2.4 / sing-box's recommended Linux architecture in the TUI:
+        system + auto_redirect, MTU 1500, strict_route=false. Independent MIT
+        implementation; GPL Throne code inspected, not copied
+- [x] read actual nft tables before the core starts; refuse existing inet
+        sing-box without modifying it. Use dedicated marks/queue/fallback rule
+        (shared table is still a core limitation; preflight is not an atomic
+        lock against a foreign client launching concurrently)
+- [x] discover physical-uplink DNS before TUN; configure direct bootstrap UDP
+        separately from application DoH through the selector to avoid a DNS loop
+- [x] apply resolved DNS/~./default-route only to ratbox0 after core and selector
+        readiness, through bounded sudo -n; use existing masked sudo authorization
+        flow when needed. No persistent helper, sudoers/polkit policy or password
+        file; failed DNS setup stops the core, link removal clears link DNS
+- [x] namespace tests: actual bootstrap UDP DNS, remote HTTPS DNS, verified TLS
+        site request, IPv4/IPv6 bulk upload/echo, growing counters, restart and
+        ownership protection. sudo/resolved are mocked inside the namespace
+- [x] correct v0.6.11 overclaim: fwmark rules alone do not prove packet capture
+        or the root cause of all failures. Details in TUN_RESEARCH.md
+- [ ] actual host resolved/sudo integration, browser and Telegram media behavior
+        still need validation; no live routing or foreign VPN was changed here
+
 ## v0.6.11 "Detect nftables OUTPUT capture by another client"
 
 - [x] live-host repro: with ThroneCore (auto_redirect) running, mixed of the

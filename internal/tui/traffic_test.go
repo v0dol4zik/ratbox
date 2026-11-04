@@ -55,6 +55,19 @@ func TestTUNIngressMessages(t *testing.T) {
 	}
 }
 
+func TestTUNUsesUpstreamLinuxLayout(t *testing.T) {
+	a := New(&store.Store{TunMode: true}, process.NewManager(process.Config{}))
+	opts := a.startOptions()
+	if !opts.Tun || !opts.TunAutoRedirect || !opts.TunSystemSetup || opts.TunStack != "system" || opts.TunStrictRoute == nil || *opts.TunStrictRoute {
+		t.Fatalf("incomplete Linux TUN layout: %+v", opts)
+	}
+	a.store.TunMode = false
+	opts = a.startOptions()
+	if opts.Tun || opts.TunAutoRedirect || opts.TunSystemSetup {
+		t.Fatal("mixed must not change host networking")
+	}
+}
+
 func TestResetTraffic(t *testing.T) {
 	a := New(&store.Store{}, process.NewManager(process.Config{}))
 	a.traffic = clash.Traffic{DownloadTotal: 999}
