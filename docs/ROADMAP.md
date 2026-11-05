@@ -43,6 +43,16 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.14 "Sing-box config subscriptions"
+
+- [x] some panels serve a full sing-box config JSON to a sing-box client
+        identity instead of share links; the user hit this as "no share links
+        found". Parse such responses: proxy outbounds become nodes, selector/
+        urltest/direct/block/dns outbounds are skipped
+- [x] unrecognized formats now name themselves in the error (clash yaml,
+        html page, json without outbounds, empty) instead of a generic
+        "no share links found"; the body itself is never echoed (credentials)
+
 ## v0.6.13 "Subscriptions that gate on client identity"
 
 - [x] diagnosed panels rejecting the unknown `ratbox/0.1` User-Agent: they serve

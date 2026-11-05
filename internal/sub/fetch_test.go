@@ -1,6 +1,7 @@
 package sub
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,4 +108,61 @@ func TestPlaceholderParsing(table *testing.T) {
 			t.Fatal("real node misclassified as placeholder")
 		}
 	})
+}
+
+// Panels of the Marzban kind serve a full sing-box config to a sing-box
+// client identity instead of share links.
+const fetchConfigBody = `{
+  "outbounds": [
+    {"type": "selector", "tag": "ratbox", "outbounds": ["a", "b"]},
+    {"type": "vless", "tag": "a", "server": "1.2.3.4", "server_port": 443, "uuid": "u"},
+    {"type": "trojan", "tag": "b", "server": "5.6.7.8", "server_port": 443, "password": "p"},
+    {"type": "direct", "tag": "direct"}
+  ]
+}`
+
+func TestParseSingBoxConfigBody(t *testing.T) {
+	nodes, err := ParseSubscriptionBody(fetchConfigBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 || nodes[0].Tag != "a" || nodes[1].Tag != "b" || nodes[0].Protocol != "vless" {
+		t.Fatalf("nodes: %+v", nodes)
+	}
+}
+
+func TestParseSingBoxConfigBase64Wrapped(t *testing.T) {
+	wrapped := base64Std(fetchConfigBody)
+	nodes, err := ParseSubscriptionBody(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("nodes: %+v", nodes)
+	}
+}
+
+func TestClashYAMLGetsNamedFormat(t *testing.T) {
+	_, err := ParseSubscriptionBody("mixed-port: 7890\nproxies:\n  - name: x\n    type: ss\n")
+	if err == nil || !strings.Contains(err.Error(), "clash yaml") {
+		t.Fatalf("expected a clash yaml hint, got %v", err)
+	}
+}
+
+func TestHTMLResponseGetsNamedFormat(t *testing.T) {
+	_, err := ParseSubscriptionBody("<html><body>login required</body></html>")
+	if err == nil || !strings.Contains(err.Error(), "html") {
+		t.Fatalf("expected an html hint, got %v", err)
+	}
+}
+
+func TestConfigWithoutProxiesFails(t *testing.T) {
+	_, err := ParseSubscriptionBody(`{"outbounds":[{"type":"selector","tag":"s","outbounds":["direct"]},{"type":"direct","tag":"direct"}]}`)
+	if err == nil || !strings.Contains(err.Error(), "no proxy outbounds") {
+		t.Fatalf("expected the no-proxies error, got %v", err)
+	}
+}
+
+func base64Std(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
 }
