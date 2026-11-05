@@ -43,6 +43,19 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.13 "Subscriptions that gate on client identity"
+
+- [x] diagnosed panels rejecting the unknown `ratbox/0.1` User-Agent: they serve
+        a placeholder "app not supported" node (0.0.0.0:1) or answer 400;
+        confirmed by the user, not a HWID issue (ratbox sends no hardware id)
+- [x] negotiate the client identity: identify as sing-box first (truthful,
+        ratbox routes through a real sing-box core), then recognized fallbacks;
+        use the first response that yields real nodes, stop after that
+- [x] detect placeholder responses (unspecified/loopback servers, localized
+        unsupported tags) instead of importing garbage nodes
+- [x] User-Agent derives from main.version instead of the hardcoded
+        "ratbox/0.1" (P2.4); fetch errors redact url query tokens
+
 ## v0.6.12 "Adopt the upstream Linux TUN layout and explicit DNS lifecycle"
 
 - [x] use Throne 1.2.4 / sing-box's recommended Linux architecture in the TUI:
@@ -252,6 +265,8 @@ routing leftovers are not generally harmless. See v0.6.6 above.
 - [ ] P2.2 duplicate subscription urls -> offer update instead
 - [ ] P2.3 rewrite footer hints (four tabs, arrows, no lying)
 - [ ] P2.4 User-Agent from main.version instead of hardcoded "ratbox/0.1"
+        (partially done in v0.6.13: subscription fetch; any future
+        rule-set downloads need the same wiring)
 - [ ] P2.5 unify log height calc (G misses one line)
 - [x] P2.6 (obsolete with the `:` removal) — case ":" without return
 - [x] P2.7 clean latency map of removed nodes — done in v0.6.3

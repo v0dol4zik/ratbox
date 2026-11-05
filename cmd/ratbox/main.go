@@ -12,6 +12,7 @@ import (
 
 	"github.com/v0dol4zik/ratbox/internal/core/process"
 	"github.com/v0dol4zik/ratbox/internal/store"
+	"github.com/v0dol4zik/ratbox/internal/sub"
 	"github.com/v0dol4zik/ratbox/internal/tui"
 )
 
@@ -26,6 +27,8 @@ func main() {
 		fmt.Println("ratbox", version)
 		return
 	}
+
+	sub.AppVersion = version // subscription User-Agent matches the real build
 
 	storePath, err := store.DefaultPath()
 	if err != nil {
