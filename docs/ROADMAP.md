@@ -43,6 +43,18 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.15 "Clash YAML subscriptions"
+
+- [x] parse the clash/mihomo `proxies:` format: ss (obfs/v2ray-plugin),
+        vmess, vless (reality/ws/grpc/http), trojan, hysteria2 (obfs, up/down),
+        tuic. Unsupported proxy types/plugins are skipped; a response with
+        nothing supported fails with a count
+- [x] yaml payloads also accepted base64-wrapped; placeholders (0.0.0.0)
+        still rejected at the Fetch level
+- [x] new dependency gopkg.in/yaml.v3 (Apache-2.0, interface-compatible with
+        an MIT project); converted nodes validated with the real core via
+        `sing-box check` in tests
+
 ## v0.6.14 "Sing-box config subscriptions"
 
 - [x] some panels serve a full sing-box config JSON to a sing-box client

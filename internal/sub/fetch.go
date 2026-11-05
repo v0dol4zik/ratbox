@@ -106,6 +106,9 @@ func ParseSubscriptionBody(body string) ([]*model.Node, error) {
 	if nodes, isConfig, err := parseSingBoxConfig(content); isConfig {
 		return nodes, err
 	}
+	if looksLikeClashYAML(content) {
+		return ParseClashYAML(content)
+	}
 	var (
 		nodes []*model.Node
 		errs  int
@@ -189,7 +192,7 @@ func bodyFormatHint(content string) string {
 	case strings.HasPrefix(trimmed, "<"):
 		return "html response (likely an error or login page); check the url"
 	case looksLikeClashYAML(trimmed):
-		return "clash yaml is not supported yet; use a links/base64 or sing-box subscription format"
+		return "clash yaml could not be parsed; report it with the subscription url"
 	case strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "["):
 		return "json without proxy outbounds"
 	case trimmed == "":
