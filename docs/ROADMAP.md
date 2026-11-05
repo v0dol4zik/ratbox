@@ -43,6 +43,22 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.16 "Subscription gates and empty-subscription verdicts"
+
+- [x] probed the real failing panel (a Remnawave-style provider, Remnawave-style) with ~23
+        client identities: all got the app-not-supported placeholder (as a
+        base64 link, an embedded sing-box-json node or a clash yaml node), and
+        ClashforWindows passed the gate but received a valid but EMPTY config
+        (proxies: []). The user's subscription has no nodes to serve — not a
+        ratbox or HWID problem; nothing in ratbox sends a hardware id
+- [x] expanded the identity list (sing-box, SFM, singbox, v2rayNG,
+        ClashMetaForAndroid, ClashforWindows) so more allowlists have a match
+- [x] an authoritative empty response (empty body, proxies: [], a sing-box
+        config without proxy outbounds) now stops the retries and reports a
+        clear verdict instead of chasing placeholders
+- [x] test polish: controller port in TestCoreStartSmoke chosen dynamically
+        (TIME_WAIT collision caused a flaky failure)
+
 ## v0.6.15 "Clash YAML subscriptions"
 
 - [x] parse the clash/mihomo `proxies:` format: ss (obfs/v2ray-plugin),

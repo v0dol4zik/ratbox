@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -277,8 +278,16 @@ func TestCoreStartSmoke(t *testing.T) {
 	}
 	mixedPort := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
+	// a fixed controller port collides with TIME_WAIT sockets of a previous
+	// run; take a free one
+	cl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := "127.0.0.1:" + strconv.Itoa(cl.Addr().(*net.TCPAddr).Port)
+	_ = cl.Close()
 	cfg, err := BuildConfig(StartOptions{Nodes: nodes, ActiveTag: n.Tag, Auto: true, ServicePort: 39104},
-		mixedPort, "127.0.0.1:39090", secret, dir)
+		mixedPort, controller, secret, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +305,7 @@ func TestCoreStartSmoke(t *testing.T) {
 	}
 	defer func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); _ = cmd.Wait() }()
 
-	client := clash.New("http://127.0.0.1:39090", secret)
+	client := clash.New("http://"+controller, secret)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := client.Version(); err == nil {

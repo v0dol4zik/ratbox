@@ -77,7 +77,7 @@ func ParseClashYAML(body string) ([]*model.Node, error) {
 		return nil, fmt.Errorf("subscription: invalid clash yaml: %v", err)
 	}
 	if len(cfg.Proxies) == 0 {
-		return nil, fmt.Errorf("subscription: clash yaml has no proxies")
+		return nil, fmt.Errorf("subscription: clash yaml contains no proxy entries: %w", errEmptySubscription)
 	}
 	var nodes []*model.Node
 	for _, p := range cfg.Proxies {

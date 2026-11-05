@@ -2,6 +2,7 @@ package sub
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +86,32 @@ func TestFetchReportsBlockedStatus(t *testing.T) {
 	_, err := Fetch(srv.URL, 5*time.Second, "")
 	if err == nil || !strings.Contains(err.Error(), "http 400") {
 		t.Fatalf("expected the blocked status, got %v", err)
+	}
+}
+
+func TestFetchStopsOnAuthoritativeEmptyResponse(t *testing.T) {
+	// Mirror of the observed a Remnawave-style provider behavior: most identities get a
+	// placeholder, ClashforWindows passes the gate and receives a valid
+	// but empty config. The fetch must stop there with a clear verdict.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ua := strings.ToLower(r.Header.Get("User-Agent"))
+		if strings.Contains(ua, "clashforwindows") {
+			_, _ = w.Write([]byte("mixed-port: 7890\nproxies: []\n"))
+			return
+		}
+		_, _ = w.Write([]byte("vless://uuid@0.0.0.0:1?type=tcp#Unsupported"))
+	}))
+	defer srv.Close()
+	_, err := Fetch(srv.URL, 5*time.Second, "")
+	if err == nil || !strings.Contains(err.Error(), "served no nodes") {
+		t.Fatalf("expected the empty-subscription verdict, got %v", err)
+	}
+}
+
+func TestParseClashYAMLEmptyIsAuthoritative(t *testing.T) {
+	_, err := ParseSubscriptionBody("proxies: []\n")
+	if !errors.Is(err, errEmptySubscription) {
+		t.Fatalf("expected the empty sentinel, got %v", err)
 	}
 }
 

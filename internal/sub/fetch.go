@@ -2,6 +2,7 @@ package sub
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,21 +14,33 @@ import (
 	"github.com/v0dol4zik/ratbox/internal/model"
 )
 
+// errEmptySubscription marks an authoritative "allowed but nothing to serve"
+// response: the payload parsed, the service confirmed the request, and there
+// were zero nodes. Retrying with another client identity cannot help, so the
+// fetch loop stops and reports it.
+var errEmptySubscription = errors.New("empty subscription")
+
 // AppVersion is set by the binary so the User-Agent reflects the real build
 // instead of a stale hardcoded string.
 var AppVersion = "dev"
 
-// Subscription panels commonly gate on the client User-Agent: an unknown agent
-// gets a placeholder "app not supported" node (server 0.0.0.0:1) or an HTTP
-// error instead of the real list. Request with recognized client identities in
-// order and use the first response that yields real nodes. The first entry is
-// truthful: ratbox routes everything through a real sing-box core.
+// Subscription panels commonly gate on the client User-Agent, often by
+// prefix: an unknown agent gets a placeholder "app not supported" node
+// (server 0.0.0.0:1) or an HTTP error instead of the real list. Request with
+// recognized client identities in order and use the first response that
+// yields real nodes. SFM and singbox come first because panels observed in
+// the wild (Remnawave-style) serve a real sing-box config to them while
+// rejecting "sing-box" (with dash) and v2rayNG with the placeholder.
 func clientUserAgents() []string {
 	home := "github.com/v0dol4zik/ratbox"
+	note := "; +" + home
 	return []string{
-		"sing-box/1.14.4 (ratbox/" + AppVersion + "; +" + home + ")",
+		"sing-box/1.14.4 (ratbox/" + AppVersion + note + ")",
+		"SFM/2.0.8 (ratbox/" + AppVersion + note + ")",
+		"singbox/1.11.0 (ratbox/" + AppVersion + note + ")",
 		"v2rayNG/1.9.24 (ratbox/" + AppVersion + ")",
-		"clash.meta/1.19.13 (ratbox/" + AppVersion + ")",
+		"ClashMetaForAndroid/2.11.5 (ratbox/" + AppVersion + ")",
+		"ClashforWindows/0.20.39 (ratbox/" + AppVersion + ")",
 	}
 }
 
@@ -41,6 +54,9 @@ func Fetch(subURL string, timeout time.Duration, proxyURL string) ([]*model.Node
 	for _, ua := range clientUserAgents() {
 		nodes, err := fetchOnce(subURL, timeout, proxyURL, ua)
 		if err != nil {
+			if errors.Is(err, errEmptySubscription) {
+				return nil, fmt.Errorf("subscription: the service accepted the request but served no nodes; check the subscription status on the provider's site")
+			}
 			lastErr = err
 			continue
 		}
@@ -129,6 +145,9 @@ func ParseSubscriptionBody(body string) ([]*model.Node, error) {
 		return nil, fmt.Errorf("subscription: %d links failed to parse", errs)
 	}
 	if len(nodes) == 0 {
+		if content == "" {
+			return nil, fmt.Errorf("subscription: empty response: %w", errEmptySubscription)
+		}
 		return nil, fmt.Errorf("subscription: %s", bodyFormatHint(content))
 	}
 	return nodes, nil
@@ -161,7 +180,7 @@ func parseSingBoxConfig(content string) ([]*model.Node, bool, error) {
 		nodes = append(nodes, &model.Node{Tag: o.Tag, Protocol: o.Type, Outbound: raw})
 	}
 	if len(nodes) == 0 {
-		return nil, true, fmt.Errorf("subscription: sing-box config contains no proxy outbounds")
+		return nil, true, fmt.Errorf("subscription: sing-box config contains no proxy outbounds: %w", errEmptySubscription)
 	}
 	return nodes, true, nil
 }
