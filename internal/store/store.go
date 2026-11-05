@@ -27,6 +27,10 @@ type Store struct {
 	RoutingProfile int    `json:"routing_profile"` // 0=global, 1=RU bypass
 	CoreBinary     string `json:"core_binary"`     // optional path to sing-box binary
 	AutoStart      bool   `json:"autostart"`
+	// DeviceID is sent to subscriptions that demand X-HWID: a random-but-stable
+	// identifier, not tied to real hardware, persisted so device-limited
+	// services do not see a new device on every launch.
+	DeviceID string `json:"device_id,omitempty"`
 
 	Subs         []*Subscription `json:"subs"`
 	Nodes        []*model.Node   `json:"nodes"`
@@ -108,6 +112,19 @@ func NewID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// EnsureDeviceID returns the persistent device identifier, generating and
+// saving one on first use.
+func (s *Store) EnsureDeviceID() (string, error) {
+	if s.DeviceID != "" {
+		return s.DeviceID, nil
+	}
+	s.DeviceID = NewID()
+	if err := s.Save(); err != nil {
+		return "", err
+	}
+	return s.DeviceID, nil
 }
 
 // AddSubscription adds a new subscription and its nodes.

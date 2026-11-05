@@ -40,19 +40,37 @@ func clientUserAgents() []string {
 		"singbox/1.11.0 (ratbox/" + AppVersion + note + ")",
 		"v2rayNG/1.9.24 (ratbox/" + AppVersion + ")",
 		"ClashMetaForAndroid/2.11.5 (ratbox/" + AppVersion + ")",
+		"Karing/1.0.13.324 (ratbox/" + AppVersion + ")",
 		"ClashforWindows/0.20.39 (ratbox/" + AppVersion + ")",
 	}
+}
+
+// ErrDeviceIDRequired reports a panel that demands a device-id header
+// (X-HWID) before serving the subscription. The caller generates a persistent
+// random device id and retries once.
+var ErrDeviceIDRequired = errors.New("device id required")
+
+// deviceIDRequired detects the server-side wording observed in the wild
+// ("Включите X-HWID в настройках клиента", "device id" variants).
+func deviceIDRequired(body string) bool {
+	b := strings.ToLower(body)
+	return strings.Contains(b, "hwid") || strings.Contains(b, "id устройства") || strings.Contains(b, "device id")
 }
 
 // Fetch downloads a subscription and parses its contents.
 // The payload may be a base64-encoded list or plain text of share links.
 // A non-empty proxyURL routes the download through the service channel
 // so subscription updates survive a broken active node under tun.
-func Fetch(subURL string, timeout time.Duration, proxyURL string) ([]*model.Node, error) {
+// A non-empty deviceID is sent as the X-HWID header for panels that bind
+// subscriptions to a device identifier.
+func Fetch(subURL string, timeout time.Duration, proxyURL, deviceID string) ([]*model.Node, error) {
 	subURL = strings.TrimSpace(subURL)
 	var lastErr error
 	for _, ua := range clientUserAgents() {
-		nodes, err := fetchOnce(subURL, timeout, proxyURL, ua)
+		nodes, err := fetchOnce(subURL, timeout, proxyURL, ua, deviceID)
+		if errors.Is(err, ErrDeviceIDRequired) {
+			return nil, fmt.Errorf("subscription: %w", ErrDeviceIDRequired)
+		}
 		if err != nil {
 			if errors.Is(err, errEmptySubscription) {
 				return nil, fmt.Errorf("subscription: the service accepted the request but served no nodes; check the subscription status on the provider's site")
@@ -80,7 +98,7 @@ func redactURL(raw string) string {
 	return raw
 }
 
-func fetchOnce(subURL string, timeout time.Duration, proxyURL, ua string) ([]*model.Node, error) {
+func fetchOnce(subURL string, timeout time.Duration, proxyURL, ua, deviceID string) ([]*model.Node, error) {
 	transport := &http.Transport{}
 	if proxyURL != "" {
 		if pu, err := url.Parse(proxyURL); err == nil {
@@ -93,12 +111,24 @@ func fetchOnce(subURL string, timeout time.Duration, proxyURL, ua string) ([]*mo
 		return nil, err
 	}
 	req.Header.Set("User-Agent", ua)
+	if deviceID != "" {
+		req.Header.Set("X-HWID", deviceID)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusBadRequest && deviceIDRequired(string(body)) {
+			return nil, ErrDeviceIDRequired
+		}
+		// Short plain-text explanations ("Достигнут лимит устройств…") are
+		// more useful than a bare status code; structured payloads stay hidden.
+		if s := strings.TrimSpace(string(body)); s != "" && len(s) <= 200 && !strings.ContainsAny(s, "{}<") {
+			return nil, fmt.Errorf("subscription: http %d: %s", resp.StatusCode, strings.ReplaceAll(s, "\n", " "))
+		}
 		return nil, fmt.Errorf("subscription: http %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -168,13 +198,22 @@ func parseSingBoxConfig(content string) ([]*model.Node, bool, error) {
 		return nil, true, fmt.Errorf("subscription: invalid sing-box config: %v", err)
 	}
 	nonProxy := map[string]bool{"selector": true, "urltest": true, "direct": true, "block": true, "dns": true}
+	// sing-box supports a fixed transport set; panels occasionally mix in
+	// xray-only transports (xhttp) that make the core reject the whole config.
+	supportedTransport := map[string]bool{"http": true, "ws": true, "grpc": true, "quic": true, "httpupgrade": true}
 	var nodes []*model.Node
 	for _, raw := range cfg.Outbounds {
 		var o struct {
-			Type string `json:"type"`
-			Tag  string `json:"tag"`
+			Type      string         `json:"type"`
+			Tag       string         `json:"tag"`
+			Transport *struct {
+				Type string `json:"type"`
+			} `json:"transport"`
 		}
 		if err := json.Unmarshal(raw, &o); err != nil || o.Tag == "" || nonProxy[o.Type] {
+			continue
+		}
+		if o.Transport != nil && !supportedTransport[o.Transport.Type] {
 			continue
 		}
 		nodes = append(nodes, &model.Node{Tag: o.Tag, Protocol: o.Type, Outbound: raw})
@@ -194,6 +233,11 @@ func recognizedPayload(s string) bool {
 }
 
 func looksLikeClashYAML(s string) bool {
+	// clash configs appear both as yaml and as json (a json document is
+	// valid yaml; panels of this kind serve json-shaped clash payloads)
+	if strings.HasPrefix(s, "{") && strings.Contains(s, "\"proxies\"") {
+		return true
+	}
 	for _, line := range strings.Split(s, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "proxies:") {
 			return true

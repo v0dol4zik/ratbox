@@ -58,6 +58,10 @@ type App struct {
 	trafficAt    time.Time
 	trafficEpoch uint64 // discard ticks from a previous core/session
 
+// needDeviceID tracks retry attempts against device-id demands so a
+	// rejecting service cannot ping-pong forever.
+	hwidAttempts int
+
 	status    string
 	statusErr bool
 
@@ -111,6 +115,7 @@ type subFetchedMsg struct {
 	nodes  []*model.Node
 	err    error
 	reason string // error context to show in the status
+	hwid   bool   // the service demands a device id; Update retries with one
 }
 
 // linkParsedMsg carries a single parsed share link node.
@@ -682,14 +687,19 @@ func delayCmd(app *App, tag string) tea.Cmd {
 }
 
 // subFetchCmd fetches a subscription (or the raw url) in the background.
-// Store mutations happen in Update on subFetchedMsg.
+// Store mutations happen in Update on subFetchedMsg. The device id snapshot
+// is taken here (Update thread), never in the goroutine.
 func (a *App) subFetchCmd(raw string, add bool, subID, reason string) tea.Cmd {
+	deviceID := a.store.DeviceID
 	return func() tea.Msg {
 		name, subURL := parseSubInput(raw)
 		if subURL == "" {
 			return opDoneMsg{text: "invalid url", err: fmt.Errorf("%q", raw)}
 		}
-		nodes, err := sub.Fetch(subURL, 15*time.Second, a.serviceProxy())
+		nodes, err := sub.Fetch(subURL, 15*time.Second, a.serviceProxy(), deviceID)
+		if errors.Is(err, sub.ErrDeviceIDRequired) {
+			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL, hwid: true}
+		}
 		if err != nil {
 			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL}
 		}
@@ -949,6 +959,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case subFetchedMsg:
+		if m.hwid && a.hwidAttempts < 2 {
+			// The service demands a device id: generate a persistent one
+			// and retry the same request. Bounded so a rejecting service
+			// cannot loop forever.
+			a.hwidAttempts++
+			if _, err := a.store.EnsureDeviceID(); err != nil {
+				a.status, a.statusErr = "device id: "+err.Error(), true
+				return a, nil
+			}
+			raw := m.url
+			if !m.add {
+				if s := a.store.Sub(m.subID); s != nil {
+					raw = s.URL
+				}
+			}
+			if raw == "" {
+				a.status, a.statusErr = "subscription: device id required, retry failed", true
+				return a, nil
+			}
+			a.status = "device id generated — retrying…"
+			return a, a.subFetchCmd(raw, m.add, m.subID, m.reason)
+		}
 		if m.err != nil {
 			pre := m.reason
 			if pre != "" {
@@ -957,6 +989,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.status, a.statusErr = pre+errShort(m.err), true
 			return a, nil
 		}
+		a.hwidAttempts = 0
 		if m.add {
 			subObj := a.store.AddSubscription(m.name, m.url, uniquifyTags(a.store, m.nodes))
 			if err := a.store.Save(); err != nil {

@@ -43,6 +43,26 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.17 "Device-ID (HWID) subscriptions"
+
+- [x] the user's hunch was right: an HWID-gating provider answered http 400 with
+        "Для подписки нужен ID устройства. Включите X-HWID в настройках
+        клиента." Two providers observed demanding X-HWID. With an arbitrary
+        device id the first request claims a device slot (limit 1 observed),
+        other ids then get 403 "Достигнут лимит устройств"
+- [x] design: a random-but-stable device id persisted in the store, sent as
+        X-HWID only after the service demands it (privacy: hardware data is
+        never used); the demand is detected from the response text and the
+        fetch is retried once with the generated id
+- [x] short plain-text refusals ("Достигнут лимит устройств (1)…") are now
+        surfaced to the user instead of a bare http code
+- [x] json-shaped clash configs ("proxies": [...]) parse; sing-box-config
+        responses skip outbounds with xray-only transports (xhttp) instead of
+        poisoning the whole config; Karing added to the identity list
+- [x] live-verified against an HWID-gating provider: 3 usable vless reality/tcp
+        nodes import end-to-end; the rest of their fleet is xhttp (xray-only,
+        unusable with a sing-box core by design)
+
 ## v0.6.16 "Subscription gates and empty-subscription verdicts"
 
 - [x] probed the real failing panel (a Remnawave-style provider, Remnawave-style) with ~23

@@ -43,7 +43,7 @@ func fetchServer(t *testing.T, known []string, unknownStatus int, placeholder, r
 
 func TestFetchAcceptsSingBoxIdentity(t *testing.T) {
 	srv, requests := fetchServer(t, []string{"sing-box"}, 0, "", fetchRealLink)
-	nodes, err := Fetch(srv.URL, 5*time.Second, "")
+	nodes, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestFetchFallsThroughPlaceholderToRecognizedClient(t *testing.T) {
 	// try: a vless link to 0.0.0.0:1 named "app not supported".
 	placeholder := "vless://uuid@0.0.0.0:1?type=tcp#%D0%9F%D1%80%D0%B8%D0%BB%D0%BE%D0%B6%D0%B5%D0%BD%D0%B8%D0%B5%20%D0%BD%D0%B5%20%D0%BF%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B8%D0%B2%D0%B0%D0%B5%D1%82%D1%81%D1%8F"
 	srv, requests := fetchServer(t, []string{"v2rayng"}, 0, placeholder, fetchRealLink)
-	nodes, err := Fetch(srv.URL, 5*time.Second, "")
+	nodes, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestFetchFallsThroughPlaceholderToRecognizedClient(t *testing.T) {
 func TestFetchRejectsAllPlaceholderResponse(t *testing.T) {
 	placeholder := "vless://uuid@0.0.0.0:1?type=tcp#Unsupported-app"
 	srv, _ := fetchServer(t, nil, 0, placeholder, "")
-	_, err := Fetch(srv.URL, 5*time.Second, "")
+	_, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err == nil || !strings.Contains(err.Error(), "placeholder") {
 		t.Fatalf("expected a placeholder error, got %v", err)
 	}
@@ -83,7 +83,7 @@ func TestFetchRejectsAllPlaceholderResponse(t *testing.T) {
 
 func TestFetchReportsBlockedStatus(t *testing.T) {
 	srv, _ := fetchServer(t, nil, http.StatusBadRequest, "", "")
-	_, err := Fetch(srv.URL, 5*time.Second, "")
+	_, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err == nil || !strings.Contains(err.Error(), "http 400") {
 		t.Fatalf("expected the blocked status, got %v", err)
 	}
@@ -102,7 +102,7 @@ func TestFetchStopsOnAuthoritativeEmptyResponse(t *testing.T) {
 		_, _ = w.Write([]byte("vless://uuid@0.0.0.0:1?type=tcp#Unsupported"))
 	}))
 	defer srv.Close()
-	_, err := Fetch(srv.URL, 5*time.Second, "")
+	_, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err == nil || !strings.Contains(err.Error(), "served no nodes") {
 		t.Fatalf("expected the empty-subscription verdict, got %v", err)
 	}
@@ -112,6 +112,39 @@ func TestParseClashYAMLEmptyIsAuthoritative(t *testing.T) {
 	_, err := ParseSubscriptionBody("proxies: []\n")
 	if !errors.Is(err, errEmptySubscription) {
 		t.Fatalf("expected the empty sentinel, got %v", err)
+	}
+}
+
+func TestFetchDeviceIDDemand(t *testing.T) {
+	// Mirror of an HWID-gating provider: without X-HWID every identity gets
+	// http 400 "Для подписки нужен ID устройства. Включите X-HWID…"; with
+	// the header the service serves a real payload and binds a device slot.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-HWID") == "" {
+			http.Error(w, "Для подписки нужен ID устройства. Включите X-HWID в настройках клиента.", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(fetchRealLink))
+	}))
+	defer srv.Close()
+	_, err := Fetch(srv.URL, 5*time.Second, "", "")
+	if !errors.Is(err, ErrDeviceIDRequired) {
+		t.Fatalf("expected the device-id demand, got %v", err)
+	}
+	nodes, err := Fetch(srv.URL, 5*time.Second, "", "0123456789abcdef")
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("with a device id: %v (%d nodes)", err, len(nodes))
+	}
+}
+
+func TestFetchSurfacesPlainTextRefusals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Достигнут лимит устройств (1). Отключите лишнее устройство.", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	_, err := Fetch(srv.URL, 5*time.Second, "", "someid")
+	if err == nil || !strings.Contains(err.Error(), "лимит устройств") {
+		t.Fatalf("expected the refusal text, got %v", err)
 	}
 }
 

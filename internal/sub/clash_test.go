@@ -141,6 +141,33 @@ func TestParseClashYAMLFull(t *testing.T) {
 	}
 }
 
+func TestParseClashJSONShape(t *testing.T) {
+	// Panels serving a json-shaped clash config ("proxies": [...]).
+	body := `{"mixed-port": 7890, "proxies": [{"name": "J", "type": "trojan", "server": "j.example.test", "port": 443, "password": "pw"}]}`
+	nodes, err := ParseSubscriptionBody(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].Tag != "J" || nodes[0].Protocol != "trojan" {
+		t.Fatalf("nodes: %+v", nodes)
+	}
+}
+
+func TestSingBoxConfigSkipsUnsupportedTransports(t *testing.T) {
+	// xhttp is an xray-only transport; a config mixing it in must not make
+	// the whole subscription unusable.
+	body := `{"outbounds":[` +
+		`{"type":"vless","tag":"ok","server":"1.2.3.4","server_port":443,"uuid":"u"},` +
+		`{"type":"vless","tag":"xh","server":"1.2.3.4","server_port":443,"uuid":"u","transport":{"type":"xhttp"}}]}`
+	nodes, err := ParseSubscriptionBody(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].Tag != "ok" {
+		t.Fatalf("nodes: %+v", nodes)
+	}
+}
+
 func TestParseClashYAMLBase64(t *testing.T) {
 	nodes, err := ParseSubscriptionBody(base64Std(clashYAMLBody))
 	if err != nil || len(nodes) != 6 {
