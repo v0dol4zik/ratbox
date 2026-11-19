@@ -42,7 +42,9 @@ func fetchServer(t *testing.T, known []string, unknownStatus int, placeholder, r
 }
 
 func TestFetchAcceptsSingBoxIdentity(t *testing.T) {
-	srv, requests := fetchServer(t, []string{"sing-box"}, 0, "", fetchRealLink)
+	// The browser UA leads the list now; this panel serves it a placeholder,
+	// so the sing-box identity must still be reached on the second attempt.
+	srv, requests := fetchServer(t, []string{"sing-box"}, 0, "vless://uuid@0.0.0.0:1?type=tcp#Unsupported", fetchRealLink)
 	nodes, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -50,8 +52,8 @@ func TestFetchAcceptsSingBoxIdentity(t *testing.T) {
 	if len(nodes) != 1 || nodes[0].Tag != "RealNode" {
 		t.Fatalf("nodes: %+v", nodes)
 	}
-	if atomic.LoadInt32(requests) != 1 {
-		t.Fatalf("expected a single request, got %d", *requests)
+	if atomic.LoadInt32(requests) != 2 {
+		t.Fatalf("expected browser then sing-box, got %d requests", *requests)
 	}
 }
 
@@ -86,6 +88,93 @@ func TestFetchReportsBlockedStatus(t *testing.T) {
 	_, err := Fetch(srv.URL, 5*time.Second, "", "")
 	if err == nil || !strings.Contains(err.Error(), "http 400") {
 		t.Fatalf("expected the blocked status, got %v", err)
+	}
+}
+
+func TestFetchBrowserUADefault(t *testing.T) {
+	// The FlClash approach: a plain browser UA gets the default payload from
+	// services that do not gate apps. One request must suffice.
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if strings.Contains(r.Header.Get("User-Agent"), "Mozilla/5.0") {
+			_, _ = w.Write([]byte(fetchRealLink))
+			return
+		}
+		_, _ = w.Write([]byte("vless://uuid@0.0.0.0:1?type=tcp#Unsupported"))
+	}))
+	defer srv.Close()
+	nodes, err := Fetch(srv.URL, 5*time.Second, "", "")
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("%v (%d nodes)", err, len(nodes))
+	}
+	if atomic.LoadInt32(&requests) != 1 {
+		t.Fatalf("expected a single request, got %d", requests)
+	}
+}
+
+func TestFetchBasicAuthFromUserinfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "token" || pass != "secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(fetchRealLink))
+	}))
+	defer srv.Close()
+	withCreds := strings.Replace(srv.URL, "http://", "http://token:secret@", 1)
+	nodes, err := Fetch(withCreds, 5*time.Second, "", "")
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("basic auth fetch: %v (%d nodes)", err, len(nodes))
+	}
+	clean, authHeader := splitSubCredentials(withCreds)
+	if strings.Contains(clean, "secret") || authHeader == "" {
+		t.Fatalf("userinfo must not stay in the url: %q %q", clean, authHeader)
+	}
+}
+
+func TestParseSubscriptionUserInfo(t *testing.T) {
+	info := parseSubscriptionUserInfo("upload=1111; download=2222; total=3333; expire=1700000000")
+	if info == nil || info.Upload != 1111 || info.Download != 2222 || info.Total != 3333 || info.Expire != 1700000000 {
+		t.Fatalf("%+v", info)
+	}
+	if parseSubscriptionUserInfo("") != nil {
+		t.Fatal("empty header must produce nil")
+	}
+	if parseSubscriptionUserInfo("upload=bogus; total=-5") != nil {
+		t.Fatal("garbage fields must not fabricate an info struct")
+	}
+}
+
+func TestDispositionFilename(t *testing.T) {
+	if got := dispositionFilename("attachment; filename=\"My Sub.yaml\""); got != "My Sub.yaml" {
+		t.Fatalf("filename: %q", got)
+	}
+	if got := dispositionFilename("attachment; filename*=UTF-8''%D0%9C%D0%BE%D1%8F.yaml"); got != "Моя.yaml" {
+		t.Fatalf("filename*: %q", got)
+	}
+	if dispositionFilename("") != "" || dispositionFilename("inline") != "" {
+		t.Fatal("absent or bare dispositions must stay empty")
+	}
+}
+
+func TestFetchSubCarriesMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Subscription-Userinfo", "upload=10; download=20; total=30; expire=1893456000")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"provider.yaml\"")
+		_, _ = w.Write([]byte(fetchRealLink))
+	}))
+	defer srv.Close()
+	res, err := FetchSub(srv.URL, 5*time.Second, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Info == nil || res.Info.Total != 30 || res.Info.Expire != 1893456000 {
+		t.Fatalf("info: %+v", res.Info)
+	}
+	if res.Filename != "provider.yaml" {
+		t.Fatalf("filename: %q", res.Filename)
 	}
 }
 

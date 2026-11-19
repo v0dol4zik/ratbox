@@ -3,8 +3,10 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/v0dol4zik/ratbox/internal/core/process"
+	"github.com/v0dol4zik/ratbox/internal/store"
 )
 
 func (a *App) View() string {
@@ -222,6 +224,10 @@ func (a *App) renderSubs(height int) string {
 		return "\n " + dimStyle.Render("no subscriptions — press `a` to add one")
 	}
 	var lines []string
+	maxEntries := (height - 1) / 2 // every entry renders two physical lines
+	if maxEntries < 1 {
+		maxEntries = 1
+	}
 	for i, s := range a.store.Subs {
 		style := normalStyle
 		marker := " "
@@ -238,17 +244,69 @@ func (a *App) renderSubs(height int) string {
 				count++
 			}
 		}
-		lines = append(lines, fmt.Sprintf("%s %s  %s nodes  %s",
-			marker,
-			style.Render(TruncateVisible(s.Name, 20)),
-			dimStyle.Render(fmt.Sprintf("%d", count)),
-			dimStyle.Render(TruncateVisible(s.URL, a.width-40)),
-		))
-		if len(lines) >= height-1 {
+		row := fmt.Sprintf("%s %s  %s nodes", marker,
+			style.Render(TruncateVisible(s.Name, 24)),
+			dimStyle.Render(fmt.Sprintf("%d", count)))
+		if meta := subMetaView(s); meta != "" {
+			row += "  " + meta
+		}
+		row += "\n   " + dimStyle.Render(TruncateVisible(s.URL, maxInt(a.width-6, 10)))
+		lines = append(lines, row)
+		if len(lines) >= maxEntries {
 			break
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// subMetaView renders the provider-side account state (subscription-userinfo
+// header): used traffic and the expiry date, dim by default, warn near the
+// end, error once expired.
+func subMetaView(s *store.Subscription) string {
+	var parts []string
+	if s.TrafficTotal > 0 {
+		used := s.UploadTotal + s.DownloadTotal
+		pct := float64(used) / float64(s.TrafficTotal)
+		style := dimStyle
+		if pct >= 1 {
+			style = errStyle
+		} else if pct >= 0.8 {
+			style = warnStyle
+		}
+		parts = append(parts, style.Render(fmt.Sprintf("%s / %s", humanBytes(used), humanBytes(s.TrafficTotal))))
+	}
+	if s.ExpireUnix > 0 {
+		left := time.Until(time.Unix(s.ExpireUnix, 0))
+		style := dimStyle
+		label := time.Unix(s.ExpireUnix, 0).Format("Jan 2")
+		switch {
+		case left < 0:
+			style, label = errStyle, "expired"
+		case left < 72*time.Hour:
+			style = warnStyle
+			label = fmt.Sprintf("%dd left", int(left.Hours()/24)+1)
+		}
+		parts = append(parts, style.Render(label))
+	}
+	if s.LastUpdateUnix > 0 {
+		parts = append(parts, dimStyle.Render("upd "+humanAgo(time.Unix(s.LastUpdateUnix, 0))))
+	}
+	return strings.Join(parts, " ")
+}
+
+// humanAgo renders a coarse "2h"-style age for the subs tab.
+func humanAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func (a *App) renderLogs(height int) string {

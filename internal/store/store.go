@@ -17,6 +17,26 @@ type Subscription struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	// Provider-side state from the subscription-userinfo header (0 = unknown).
+	LastUpdateUnix int64 `json:"last_update,omitempty"`
+	UploadTotal    int64 `json:"upload_total,omitempty"`
+	DownloadTotal  int64 `json:"download_total,omitempty"`
+	TrafficTotal   int64 `json:"traffic_total,omitempty"`
+	ExpireUnix     int64 `json:"expire_unix,omitempty"`
+}
+
+// UpdateSubMeta records a successful refresh and the provider-side account
+// state without touching nodes.
+func (s *Store) UpdateSubMeta(id string, upload, download, total, expire, now int64) {
+	sub := s.Sub(id)
+	if sub == nil {
+		return
+	}
+	sub.LastUpdateUnix = now
+	sub.UploadTotal = upload
+	sub.DownloadTotal = download
+	sub.TrafficTotal = total
+	sub.ExpireUnix = expire
 }
 
 type Store struct {
@@ -71,6 +91,10 @@ func Load(path string) (*Store, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Fresh install behaves like Throne: the core connects on its own
+			// at the next launch once nodes exist. Existing stores keep their
+			// own setting.
+			s.AutoStart = true
 			if err := s.Save(); err != nil {
 				return nil, err
 			}

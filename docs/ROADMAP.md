@@ -43,6 +43,33 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.18 "As simple as Throne, as compatible as FlClash"
+
+Principles were studied from the referenced projects' code, then implemented
+in ratbox's own way (no GPL code copied).
+
+From FlClash (lib/models/profile.dart, lib/common/request.dart):
+
+- [x] subscription downloads lead with a plain browser User-Agent (the
+        FlClash approach: panels rarely gate browsers, default formats are
+        served), client identities follow as fallback
+- [x] credentials in the url userinfo (user:pass@host) become an
+        Authorization header; the request url keeps no userinfo
+- [x] subscription-userinfo header parsed: upload/download/total/expire
+        stored per subscription and shown in the subs tab (traffic with
+        warn/error near the limit, expiry date, "3d left", "expired", "upd 2h")
+- [x] content-disposition filename becomes the default subscription name
+- [x] subscriptions auto-refresh when older than a day (the FlClash/Throne
+        default interval) — silently, through the direct service channel;
+        a refresh that does not change the node set does not restart the core
+
+From Throne (mainwindow_events.cpp, HTTPRequestHelper.cpp, GroupUpdater.cpp):
+
+- [x] fresh installs auto-start the core on launch (existing stores keep
+        their setting); the launch flow batches auto-refresh and start
+- [ ] Throne-style hotkey coverage and per-subscription manual device-id
+        override (sub_custom_hwid_params analog) are not implemented yet
+
 ## v0.6.17 "Device-ID (HWID) subscriptions"
 
 - [x] the user's hunch was right: an HWID-gating provider answered http 400 with

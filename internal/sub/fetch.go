@@ -1,6 +1,7 @@
 package sub
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,15 +28,16 @@ var AppVersion = "dev"
 
 // Subscription panels commonly gate on the client User-Agent, often by
 // prefix: an unknown agent gets a placeholder "app not supported" node
-// (server 0.0.0.0:1) or an HTTP error instead of the real list. Request with
-// recognized client identities in order and use the first response that
-// yields real nodes. SFM and singbox come first because panels observed in
-// the wild (Remnawave-style) serve a real sing-box config to them while
-// rejecting "sing-box" (with dash) and v2rayNG with the placeholder.
+// (server 0.0.0.0:1) or an HTTP error instead of the real list. The first
+// identity is a plain browser UA — the FlClash approach: panels rarely gate
+// browsers and serve their default format (links/base64/yaml), which the
+// parser accepts. Client identities follow for panels that format-switch by
+// app; the order was verified against real Remnawave-style panels.
 func clientUserAgents() []string {
 	home := "github.com/v0dol4zik/ratbox"
 	note := "; +" + home
 	return []string{
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		"sing-box/1.14.4 (ratbox/" + AppVersion + note + ")",
 		"SFM/2.0.8 (ratbox/" + AppVersion + note + ")",
 		"singbox/1.11.0 (ratbox/" + AppVersion + note + ")",
@@ -57,6 +60,23 @@ func deviceIDRequired(body string) bool {
 	return strings.Contains(b, "hwid") || strings.Contains(b, "id устройства") || strings.Contains(b, "device id")
 }
 
+// SubscriptionInfo carries the provider-side account state panels deliver
+// in the subscription-userinfo response header (the FlClash/Throne
+// convention: "upload=1; download=2; total=3; expire=1700000000").
+type SubscriptionInfo struct {
+	Upload   int64
+	Download int64
+	Total    int64
+	Expire   int64 // unix seconds; 0 = unknown
+}
+
+// FetchResult is a successful subscription download.
+type FetchResult struct {
+	Nodes    []*model.Node
+	Info     *SubscriptionInfo // nil when the service sends no userinfo header
+	Filename string            // content-disposition filename, "" when absent
+}
+
 // Fetch downloads a subscription and parses its contents.
 // The payload may be a base64-encoded list or plain text of share links.
 // A non-empty proxyURL routes the download through the service channel
@@ -64,10 +84,23 @@ func deviceIDRequired(body string) bool {
 // A non-empty deviceID is sent as the X-HWID header for panels that bind
 // subscriptions to a device identifier.
 func Fetch(subURL string, timeout time.Duration, proxyURL, deviceID string) ([]*model.Node, error) {
+	res, err := FetchSub(subURL, timeout, proxyURL, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	return res.Nodes, nil
+}
+
+// FetchSub is Fetch with the subscription metadata attached.
+func FetchSub(subURL string, timeout time.Duration, proxyURL, deviceID string) (*FetchResult, error) {
 	subURL = strings.TrimSpace(subURL)
+	// Credentials in the url userinfo (https://user:pass@host/…) move to the
+	// Authorization header — the FlClash pattern; the request url keeps no
+	// userinfo so it never leaks into logs or errors.
+	target, authHeader := splitSubCredentials(subURL)
 	var lastErr error
 	for _, ua := range clientUserAgents() {
-		nodes, err := fetchOnce(subURL, timeout, proxyURL, ua, deviceID)
+		res, err := fetchOnce(target, timeout, proxyURL, ua, deviceID, authHeader)
 		if errors.Is(err, ErrDeviceIDRequired) {
 			return nil, fmt.Errorf("subscription: %w", ErrDeviceIDRequired)
 		}
@@ -78,16 +111,28 @@ func Fetch(subURL string, timeout time.Duration, proxyURL, deviceID string) ([]*
 			lastErr = err
 			continue
 		}
-		if placeholderNodes(nodes) {
+		if placeholderNodes(res.Nodes) {
 			lastErr = fmt.Errorf("subscription: %s served a placeholder (app-not-supported) node to every client identity", redactURL(subURL))
 			continue
 		}
-		return nodes, nil
+		return res, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("subscription: no share links found")
 	}
 	return nil, lastErr
+}
+
+// splitSubCredentials extracts user:pass@ from the url into a Basic auth
+// header. A token-only userinfo (https://token@host/) is sent as the user.
+func splitSubCredentials(raw string) (target, authHeader string) {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw, ""
+	}
+	authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(u.User.String()))
+	u.User = nil
+	return u.String(), authHeader
 }
 
 // redactURL keeps the host but drops query strings, which often carry tokens.
@@ -98,7 +143,7 @@ func redactURL(raw string) string {
 	return raw
 }
 
-func fetchOnce(subURL string, timeout time.Duration, proxyURL, ua, deviceID string) ([]*model.Node, error) {
+func fetchOnce(target string, timeout time.Duration, proxyURL, ua, deviceID, authHeader string) (*FetchResult, error) {
 	transport := &http.Transport{}
 	if proxyURL != "" {
 		if pu, err := url.Parse(proxyURL); err == nil {
@@ -106,13 +151,16 @@ func fetchOnce(subURL string, timeout time.Duration, proxyURL, ua, deviceID stri
 		}
 	}
 	client := &http.Client{Timeout: timeout, Transport: transport}
-	req, err := http.NewRequest(http.MethodGet, subURL, nil)
+	req, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", ua)
 	if deviceID != "" {
 		req.Header.Set("X-HWID", deviceID)
+	}
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -135,7 +183,75 @@ func fetchOnce(subURL string, timeout time.Duration, proxyURL, ua, deviceID stri
 	if err != nil {
 		return nil, err
 	}
-	return ParseSubscriptionBody(string(body))
+	nodes, err := ParseSubscriptionBody(string(body))
+	if err != nil {
+		return nil, err
+	}
+	return &FetchResult{
+		Nodes:    nodes,
+		Info:     parseSubscriptionUserInfo(resp.Header.Get("Subscription-Userinfo")),
+		Filename: dispositionFilename(resp.Header.Get("Content-Disposition")),
+	}, nil
+}
+
+// parseSubscriptionUserInfo parses "upload=1; download=2; total=3;
+// expire=1700000000" into an info struct. Unknown or malformed fields are
+// skipped rather than failing the whole header.
+func parseSubscriptionUserInfo(h string) *SubscriptionInfo {
+	if strings.TrimSpace(h) == "" {
+		return nil
+	}
+	info := &SubscriptionInfo{}
+	for _, field := range strings.Split(h, ";") {
+		i := strings.Index(field, "=")
+		if i < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(field[:i]))
+		value, err := strconv.ParseInt(strings.TrimSpace(field[i+1:]), 10, 64)
+		if err != nil || value < 0 {
+			continue
+		}
+		switch key {
+		case "upload":
+			info.Upload = value
+		case "download":
+			info.Download = value
+		case "total":
+			info.Total = value
+		case "expire":
+			info.Expire = value
+		}
+	}
+	if info.Upload == 0 && info.Download == 0 && info.Total == 0 && info.Expire == 0 {
+		return nil
+	}
+	return info
+}
+
+// dispositionFilename extracts a usable name from a content-disposition
+// header ("attachment; filename=\"name\"" or filename*=UTF-8”name).
+func dispositionFilename(h string) string {
+	if h == "" {
+		return ""
+	}
+	if i := strings.Index(h, "filename*="); i >= 0 {
+		s := strings.TrimSpace(h[i+len("filename*="):])
+		if j := strings.Index(s, "''"); j >= 0 {
+			s = s[j+2:]
+		}
+		s = strings.Trim(strings.SplitN(s, ";", 2)[0], `"`)
+		if un, err := url.QueryUnescape(s); err == nil {
+			return strings.TrimSpace(un)
+		}
+		return s
+	}
+	if i := strings.Index(h, "filename="); i >= 0 {
+		s := strings.TrimSpace(h[i+len("filename="):])
+		s = strings.Trim(strings.SplitN(s, ";", 2)[0], `"`)
+		return strings.TrimSpace(s)
+	}
+	return ""
 }
 
 // ParseSubscriptionBody parses a raw subscription payload: share links,
@@ -204,8 +320,8 @@ func parseSingBoxConfig(content string) ([]*model.Node, bool, error) {
 	var nodes []*model.Node
 	for _, raw := range cfg.Outbounds {
 		var o struct {
-			Type      string         `json:"type"`
-			Tag       string         `json:"tag"`
+			Type      string `json:"type"`
+			Tag       string `json:"tag"`
 			Transport *struct {
 				Type string `json:"type"`
 			} `json:"transport"`

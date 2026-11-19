@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -58,7 +59,7 @@ type App struct {
 	trafficAt    time.Time
 	trafficEpoch uint64 // discard ticks from a previous core/session
 
-// needDeviceID tracks retry attempts against device-id demands so a
+	// needDeviceID tracks retry attempts against device-id demands so a
 	// rejecting service cannot ping-pong forever.
 	hwidAttempts int
 
@@ -113,9 +114,12 @@ type subFetchedMsg struct {
 	name   string // add: parsed name
 	url    string // add: subscription url
 	nodes  []*model.Node
+	info   *sub.SubscriptionInfo
+	fname  string // content-disposition filename
 	err    error
 	reason string // error context to show in the status
 	hwid   bool   // the service demands a device id; Update retries with one
+	auto   bool   // silent auto-refresh (no restart when nothing changed)
 }
 
 // linkParsedMsg carries a single parsed share link node.
@@ -175,11 +179,49 @@ type coreStateMsg struct {
 // ---------------------------------------------------------------------------
 
 func (a *App) Init() tea.Cmd {
+	cmds := []tea.Cmd{a.autoUpdateSubsCmd()}
 	if a.store.AutoStart {
-		return a.startCoreCmd()
+		cmds = append(cmds, a.startCoreCmd())
 	}
-	return nil
+	return tea.Batch(cmds...)
+}
 
+// subUpdateInterval matches the FlClash/Throne default: refresh stale
+// subscriptions once a day. Auto-refreshes never restart the core unless the
+// node list actually changed.
+const subUpdateInterval = 24 * time.Hour
+
+// autoUpdateSubsCmd refreshes subscriptions whose last update is older than
+// subUpdateInterval (FlClash/Throne default). Fetches run through the service
+// channel when a core is up, so a broken active node cannot break updates.
+func (a *App) autoUpdateSubsCmd() tea.Cmd {
+	stale := false
+	for _, s := range a.store.Subs {
+		if s.URL == "" {
+			continue
+		}
+		if s.LastUpdateUnix == 0 || time.Since(time.Unix(s.LastUpdateUnix, 0)) > subUpdateInterval {
+			stale = true
+			break
+		}
+	}
+	if !stale {
+		return nil
+	}
+	deviceID := a.store.DeviceID
+	return func() tea.Msg {
+		// Re-evaluate staleness per subscription inside the goroutine: the
+		// store may change while the fetch is in flight; mutations still
+		// happen only in Update.
+		return autoSubsTickMsg{deviceID: deviceID}
+	}
+}
+
+// autoSubsTickMsg asks Update to refresh every stale subscription through
+// the normal subFetchCmd flow (one goroutine per subscription, throttled by
+// the same machinery as manual updates).
+type autoSubsTickMsg struct {
+	deviceID string
 }
 
 func (a *App) startCoreCmd() tea.Cmd {
@@ -690,25 +732,38 @@ func delayCmd(app *App, tag string) tea.Cmd {
 // Store mutations happen in Update on subFetchedMsg. The device id snapshot
 // is taken here (Update thread), never in the goroutine.
 func (a *App) subFetchCmd(raw string, add bool, subID, reason string) tea.Cmd {
+	return a.subFetchCmdOpt(raw, add, subID, reason, false)
+}
+
+func (a *App) subFetchCmdOpt(raw string, add bool, subID, reason string, auto bool) tea.Cmd {
 	deviceID := a.store.DeviceID
 	return func() tea.Msg {
 		name, subURL := parseSubInput(raw)
 		if subURL == "" {
 			return opDoneMsg{text: "invalid url", err: fmt.Errorf("%q", raw)}
 		}
-		nodes, err := sub.Fetch(subURL, 15*time.Second, a.serviceProxy(), deviceID)
+		res, err := sub.FetchSub(subURL, 15*time.Second, a.serviceProxy(), deviceID)
+		var (
+			nodes []*model.Node
+			info  *sub.SubscriptionInfo
+			fname string
+		)
+		if res != nil {
+			nodes, info, fname = res.Nodes, res.Info, res.Filename
+		}
 		if errors.Is(err, sub.ErrDeviceIDRequired) {
-			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL, hwid: true}
+			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL, hwid: true, auto: auto}
 		}
 		if err != nil {
-			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL}
+			return subFetchedMsg{add: add, subID: subID, err: err, reason: reason, name: name, url: subURL, auto: auto}
 		}
 		if len(nodes) == 0 && !add {
 			// an update that yields nothing must not wipe the current nodes
-			return subFetchedMsg{add: add, subID: subID, reason: reason,
+			return subFetchedMsg{add: add, subID: subID, reason: reason, auto: auto,
 				err: fmt.Errorf("subscription returned 0 nodes — keeping the current set")}
 		}
-		return subFetchedMsg{add: add, subID: subID, nodes: nodes, reason: reason, name: name, url: subURL}
+		return subFetchedMsg{add: add, subID: subID, nodes: nodes, info: info, fname: fname,
+			reason: reason, name: name, url: subURL, auto: auto}
 	}
 }
 
@@ -958,6 +1013,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.status, a.statusErr = fmt.Sprintf("auto-picked the fastest node: %s (%dms)", m.tag, m.ms), false
 		return a, nil
 
+	case autoSubsTickMsg:
+		var cmds []tea.Cmd
+		for _, s := range a.store.Subs {
+			if s.URL == "" || s.LastUpdateUnix == 0 {
+				cmds = append(cmds, a.subFetchCmdOpt(s.URL, false, s.ID, "updated "+s.Name, true))
+				continue
+			}
+			if time.Since(time.Unix(s.LastUpdateUnix, 0)) > subUpdateInterval {
+				cmds = append(cmds, a.subFetchCmdOpt(s.URL, false, s.ID, "updated "+s.Name, true))
+			}
+		}
+		return a, tea.Batch(cmds...)
+
 	case subFetchedMsg:
 		if m.hwid && a.hwidAttempts < 2 {
 			// The service demands a device id: generate a persistent one
@@ -991,7 +1059,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.hwidAttempts = 0
 		if m.add {
-			subObj := a.store.AddSubscription(m.name, m.url, uniquifyTags(a.store, m.nodes))
+			name := m.name
+			if name == "" {
+				name = m.fname // content-disposition beats sub-XXXXXX
+			}
+			subObj := a.store.AddSubscription(name, m.url, uniquifyTags(a.store, m.nodes))
+			up, down, tot, exp := subInfoFields(m.info)
+			a.store.UpdateSubMeta(subObj.ID, up, down, tot, exp, time.Now().Unix())
 			if err := a.store.Save(); err != nil {
 				a.status, a.statusErr = "save failed: "+err.Error(), true
 				return a, nil
@@ -1002,6 +1076,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		subObj := a.store.Sub(m.subID)
 		if subObj == nil {
 			a.status, a.statusErr = "subscription vanished", true
+			return a, nil
+		}
+		up, down, tot, exp := subInfoFields(m.info)
+		a.store.UpdateSubMeta(m.subID, up, down, tot, exp, time.Now().Unix())
+		// Restart only when the node set really changed: silent daily
+		// auto-refreshes must not churn a running tunnel (Throne behavior).
+		old := a.store.NodesOfSub(m.subID)
+		if m.auto && nodesEqual(old, m.nodes) {
+			if err := a.store.Save(); err != nil {
+				a.status, a.statusErr = "save failed: "+err.Error(), true
+				return a, nil
+			}
+			a.status, a.statusErr = fmt.Sprintf("%s: up to date (%d nodes)", subObj.Name, len(m.nodes)), false
 			return a, nil
 		}
 		store.ReplaceSubNodes(a.store, subObj, uniquifyTags(a.store, m.nodes))
@@ -1444,6 +1531,47 @@ func uniquifyTags(st *store.Store, nodes []*model.Node) []*model.Node {
 		n.Tag = st.UniqueTag(n.Tag)
 	}
 	return nodes
+}
+
+// subInfoFields unpacks provider metadata for UpdateSubMeta (0s when absent).
+func subInfoFields(info *sub.SubscriptionInfo) (upload, download, total, expire int64) {
+	if info == nil {
+		return 0, 0, 0, 0
+	}
+	return info.Upload, info.Download, info.Total, info.Expire
+}
+
+// nodesEqual compares two node lists by outbound identity (everything except
+// the display tag): a refresh that renames nodes but keeps the same servers
+// and credentials must not restart the tunnel.
+func nodesEqual(a, b []*model.Node) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	key := func(n *model.Node) string {
+		var m map[string]any
+		if err := json.Unmarshal(n.Outbound, &m); err != nil {
+			return string(n.Outbound)
+		}
+		delete(m, "tag")
+		data, err := json.Marshal(m)
+		if err != nil {
+			return string(n.Outbound)
+		}
+		return string(data)
+	}
+	counts := make(map[string]int, len(a))
+	for _, n := range a {
+		counts[key(n)]++
+	}
+	for _, n := range b {
+		k := key(n)
+		counts[k]--
+		if counts[k] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // pruneLatency drops stale delay entries for nodes that no longer exist.
