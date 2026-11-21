@@ -19,7 +19,13 @@ var (
 	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	headerStyle   = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("252"))
+	// rowBarStyle highlights the active node row: a dark full-width bar so
+	// the connected server is findable at a glance while scanning latencies.
+	rowBarStyle = lipgloss.NewStyle().Background(lipgloss.Color(activeRowBg))
 )
+
+// activeRowBg is the background color of the active node's row bar.
+const activeRowBg = "236"
 
 func padRight(s string, w int) string {
 	if w <= 0 {

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/v0dol4zik/ratbox/internal/core/process"
 	"github.com/v0dol4zik/ratbox/internal/store"
 )
@@ -178,20 +180,12 @@ func (a *App) renderNodes(height int) string {
 
 	visible := height - 1
 	offset := visibleOffset(a.nodeIdx, len(a.store.Nodes), visible)
+	bar := lipgloss.Color(activeRowBg)
 	for i := offset; i < len(a.store.Nodes) && len(lines)-1 < visible; i++ {
 		n := a.store.Nodes[i]
 		name := cleanTag(n.Tag)
 		if len(a.store.Subs) > 1 && n.SubID != "" {
 			name = a.store.SubName(n.SubID) + "/" + n.Tag
-		}
-		marker := " "
-		style := normalStyle
-		if a.store.ActiveNodeID == n.ID {
-			marker = "*"
-			style = activeStyle
-		}
-		if i == a.nodeIdx {
-			style = selectedStyle
 		}
 		lat, latSt := "    —", dimStyle
 		if ms, ok := a.latency[n.Tag]; ok {
@@ -209,11 +203,53 @@ func (a *App) renderNodes(height int) string {
 				}
 			}
 		}
-		row := marker + " " +
-			padRight(style.Render(TruncateVisible(name, nameW-2)), nameW) +
-			" " + padRight(n.Type(), protoW) +
-			" " + padRight(n.Addr(), addrW) +
-			" " + latSt.Render(lat)
+		active := a.store.ActiveNodeID == n.ID
+		cursor := i == a.nodeIdx
+		if !active {
+			style := normalStyle
+			if cursor {
+				style = selectedStyle
+			}
+			row := " " + " " +
+				padRight(style.Render(TruncateVisible(name, nameW-2)), nameW) +
+				" " + padRight(n.Type(), protoW) +
+				" " + padRight(n.Addr(), addrW) +
+				" " + latSt.Render(lat)
+			lines = append(lines, row)
+			continue
+		}
+		// The active node renders as a full-width bar: while pinging and
+		// scanning the list, the connected server must be visible at a glance,
+		// not hunted by a small "*" marker. Every cell (including padding)
+		// carries the bar background so the highlight has no gaps.
+		fg := lipgloss.Color("39")
+		if cursor {
+			fg = lipgloss.Color("220") // cursor on the active row: yellow on the bar
+		}
+		nameStyle := lipgloss.NewStyle().Bold(true).Foreground(fg).Background(bar)
+		latStyle := latSt.Background(bar)
+		if _, tested := a.latency[n.Tag]; !tested {
+			latStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(bar) // dim 241 is unreadable on the bar
+		}
+		cell := func(plain string, w int, st lipgloss.Style) string {
+			s := plain
+			if lipgloss.Width(s) > w {
+				s = TruncateVisible(s, w)
+			}
+			s = st.Render(s)
+			if gap := w + 1 - lipgloss.Width(s); gap > 0 {
+				s += rowBarStyle.Render(strings.Repeat(" ", gap))
+			}
+			return s
+		}
+		row := cell("●", 1, nameStyle) +
+			cell(TruncateVisible(name, nameW-2), nameW, nameStyle) +
+			cell(n.Type(), protoW, rowBarStyle) +
+			cell(n.Addr(), addrW, rowBarStyle) +
+			latStyle.Render(lat)
+		if gap := a.width - lipgloss.Width(row); gap > 0 {
+			row += rowBarStyle.Render(strings.Repeat(" ", gap))
+		}
 		lines = append(lines, row)
 	}
 	return strings.Join(lines, "\n")

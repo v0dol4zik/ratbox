@@ -43,6 +43,17 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.19 "Find the active node at a glance"
+
+- [x] the active node row now renders as a full-width highlighted bar (dark
+        background + ● marker, bold colored name): while pinging all nodes
+        and scanning for the lowest latency the connected server is visible
+        immediately instead of being marked by a lone "*"
+- [x] the cursor keeps the bold yellow style; when it sits on the active row
+        the name turns yellow on the same bar (styles compose, no flicker)
+- [x] latency colors stay meaningful on the bar (untested switches to a
+        lighter dim); inactive rows keep the previous compact layout
+
 ## v0.6.18 "As simple as Throne, as compatible as FlClash"
 
 Principles were studied from the referenced projects' code, then implemented
