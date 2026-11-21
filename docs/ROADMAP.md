@@ -43,6 +43,23 @@ here in the same commit.
 - [x] subscription-as-profile: Enter on a subscription pins the tunnel to
         its nodes (header shows the profile, enter again to unpin)
 
+## v0.6.20 "Always-visible cursor, honest markers, animated pings"
+
+- [x] the cursor row is now a blue full-width bar on every screen: while
+        scrolling a long list looking for a node, the cursor position is
+        never lost (the previous bold-yellow-only text was easy to miss)
+- [x] the connected node keeps its gray bar + ● only while the core runs;
+        after a stop the remembered node downgrades to a quiet hollow ○
+        marker — no more gray row masquerading as a stuck cursor after the
+        VPN is off; on the cursor row the blue bar wins but the ●/○ marker
+        still tells the connected/remembered node apart
+- [x] while a sweep pings, the latency column animates (braille spinner) and
+        stale or partial green/red marks stay hidden — verdicts appear only
+        when the whole sweep finishes (single-node `t` behaves the same);
+        the status line carries the same spinner so long sweeps do not look
+        frozen; the ticker self-stops when no work is in flight and is
+        disarmed on temp-core failure too
+
 ## v0.6.19 "Find the active node at a glance"
 
 - [x] the active node row now renders as a full-width highlighted bar (dark

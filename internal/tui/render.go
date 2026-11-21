@@ -180,7 +180,6 @@ func (a *App) renderNodes(height int) string {
 
 	visible := height - 1
 	offset := visibleOffset(a.nodeIdx, len(a.store.Nodes), visible)
-	bar := lipgloss.Color(activeRowBg)
 	for i := offset; i < len(a.store.Nodes) && len(lines)-1 < visible; i++ {
 		n := a.store.Nodes[i]
 		name := cleanTag(n.Tag)
@@ -188,7 +187,13 @@ func (a *App) renderNodes(height int) string {
 			name = a.store.SubName(n.SubID) + "/" + n.Tag
 		}
 		lat, latSt := "    —", dimStyle
-		if ms, ok := a.latency[n.Tag]; ok {
+		if _, sweeping := a.testing[n.Tag]; sweeping {
+			// A sweep is running: animate instead of showing results. Stale or
+			// partial green/red marks read as final verdicts — the column settles
+			// only when the whole sweep finishes.
+			lat = string(spinFrames[a.spinFrame%len(spinFrames)])
+			latSt = warnStyle
+		} else if ms, ok := a.latency[n.Tag]; ok {
 			if ms < 0 {
 				lat, latSt = "    ✗", errStyle // dead node
 			} else {
@@ -205,31 +210,46 @@ func (a *App) renderNodes(height int) string {
 		}
 		active := a.store.ActiveNodeID == n.ID
 		cursor := i == a.nodeIdx
-		if !active {
-			style := normalStyle
-			if cursor {
-				style = selectedStyle
+		// The gray bar means "traffic is going through this node right now".
+		// With the core stopped it would look like a stuck cursor, so the
+		// remembered node downgrades to a quiet hollow ○ marker instead.
+		if !a.running {
+			active = false
+		}
+		if !active && !cursor {
+			marker := " "
+			if a.store.ActiveNodeID == n.ID {
+				marker = dimStyle.Render("○") // selected for the next start
 			}
-			row := " " + " " +
-				padRight(style.Render(TruncateVisible(name, nameW-2)), nameW) +
+			row := marker + " " +
+				padRight(normalStyle.Render(TruncateVisible(name, nameW-2)), nameW) +
 				" " + padRight(n.Type(), protoW) +
 				" " + padRight(n.Addr(), addrW) +
 				" " + latSt.Render(lat)
 			lines = append(lines, row)
 			continue
 		}
-		// The active node renders as a full-width bar: while pinging and
-		// scanning the list, the connected server must be visible at a glance,
-		// not hunted by a small "*" marker. Every cell (including padding)
-		// carries the bar background so the highlight has no gaps.
-		fg := lipgloss.Color("39")
+		// Highlighted rows render as full-width bars: the cursor row (blue) is
+		// visible wherever it is while scrolling a long list, the connected
+		// node row (gray, ● marker) stays findable while comparing latencies.
+		// On the cursor row the blue bar wins — that is the row the user is
+		// looking for — but the marker keeps the connected/selected node
+		// identifiable (● live, ○ remembered).
+		barStyle, marker, fg := rowBarStyle, " ", lipgloss.Color("39")
 		if cursor {
-			fg = lipgloss.Color("220") // cursor on the active row: yellow on the bar
+			barStyle, fg = cursorBarStyle, lipgloss.Color("220")
 		}
-		nameStyle := lipgloss.NewStyle().Bold(true).Foreground(fg).Background(bar)
-		latStyle := latSt.Background(bar)
+		if a.store.ActiveNodeID == n.ID {
+			if active {
+				marker = "●"
+			} else {
+				marker = "○"
+			}
+		}
+		nameStyle := lipgloss.NewStyle().Bold(true).Foreground(fg).Background(barStyle.GetBackground())
+		latStyle := latSt.Background(barStyle.GetBackground())
 		if _, tested := a.latency[n.Tag]; !tested {
-			latStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(bar) // dim 241 is unreadable on the bar
+			latStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(barStyle.GetBackground()) // dim 241 is unreadable on the bar
 		}
 		cell := func(plain string, w int, st lipgloss.Style) string {
 			s := plain
@@ -238,17 +258,17 @@ func (a *App) renderNodes(height int) string {
 			}
 			s = st.Render(s)
 			if gap := w + 1 - lipgloss.Width(s); gap > 0 {
-				s += rowBarStyle.Render(strings.Repeat(" ", gap))
+				s += barStyle.Render(strings.Repeat(" ", gap))
 			}
 			return s
 		}
-		row := cell("●", 1, nameStyle) +
+		row := cell(marker, 1, nameStyle) +
 			cell(TruncateVisible(name, nameW-2), nameW, nameStyle) +
-			cell(n.Type(), protoW, rowBarStyle) +
-			cell(n.Addr(), addrW, rowBarStyle) +
+			cell(n.Type(), protoW, barStyle) +
+			cell(n.Addr(), addrW, barStyle) +
 			latStyle.Render(lat)
 		if gap := a.width - lipgloss.Width(row); gap > 0 {
-			row += rowBarStyle.Render(strings.Repeat(" ", gap))
+			row += barStyle.Render(strings.Repeat(" ", gap))
 		}
 		lines = append(lines, row)
 	}
@@ -405,6 +425,10 @@ func (a *App) renderFooter() string {
 			status = errStyle.Render(" ! ") + errStyle.Render(a.status)
 		} else {
 			status = okStyle.Render(" ✓ ") + a.status
+		}
+		// the spinner marks in-flight work so a long sweep does not look frozen
+		if len(a.testing) > 0 || a.tempActive {
+			status = warnStyle.Render(" "+string(spinFrames[a.spinFrame%len(spinFrames)])+" ") + status
 		}
 	}
 	statusLine := "\n" + status

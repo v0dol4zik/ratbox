@@ -52,7 +52,9 @@ type App struct {
 	testDone     int
 	testOk       int
 	testErr      string
-	tempActive   bool // a throwaway test core is in flight
+	testing      map[string]bool // tags in the running sweep: animated until all finish
+	spinFrame    int             // braille spinner frame, advanced by spinTickMsg
+	tempActive   bool            // a throwaway test core is in flight
 	traffic      clash.Traffic
 	rateDown     int64
 	rateUp       int64
@@ -85,6 +87,7 @@ func New(st *store.Store, mgr *process.Manager) *App {
 		mgr:     mgr,
 		latency: make(map[string]int),
 		dSem:    make(chan struct{}, 5),
+		testing: make(map[string]bool),
 	}
 }
 
@@ -157,6 +160,18 @@ type needSudoPromptMsg struct {
 type tunIngressMsg struct {
 	epoch uint64
 	err   error
+}
+
+// spinFrames animates the latency column while a sweep runs (braille
+// spinner, one frame per spinTickMsg).
+const spinFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+// spinTickMsg advances the spinner. The ticker self-stops as soon as no
+// sweep is in flight, so an abandoned animation cannot spin forever.
+type spinTickMsg struct{}
+
+func spinTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} })
 }
 
 func tunIngressCmd(api *clash.Client, epoch uint64) tea.Cmd {
@@ -899,6 +914,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, trafficTickCmd(a)
 
+	case spinTickMsg:
+		if len(a.testing) == 0 && !a.tempActive {
+			return a, nil
+		}
+		a.spinFrame++
+		return a, spinTickCmd()
+
 	case delayMsg:
 		if m.err != nil {
 			a.latency[m.tag] = -1
@@ -912,6 +934,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.testDone++
 		if a.testDone >= a.testTotal {
 			a.tempActive = false
+			// the whole sweep finished: stop animating and reveal the results
+			a.testing = make(map[string]bool)
 			if a.testTotal == 1 {
 				if m.err != nil {
 					a.status, a.statusErr = m.tag+": "+errShort(m.err), true
@@ -1120,6 +1144,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tempCoreMsg:
 		a.tempActive = false
+		a.testing = make(map[string]bool) // no delayMsg will ever arrive for this sweep
 		a.status, a.statusErr = "test core: "+errShort(m.err), true
 		return a, nil
 
@@ -1288,14 +1313,15 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			n := a.store.Nodes[a.nodeIdx]
 			a.testTotal, a.testDone, a.testOk, a.testErr = 1, 0, 0, ""
+			a.testing[n.Tag] = true // animated until the probe answers
 			if a.client == nil {
 				// no core: probe through a throwaway no-tun instance
 				a.tempActive = true
 				a.status = "testing " + n.Tag + " (no core — temporary core…)…"
-				return a, a.tempTestCmd([]string{n.Tag})
+				return a, tea.Batch(a.tempTestCmd([]string{n.Tag}), spinTickCmd())
 			}
 			a.status = "testing " + n.Tag + "…"
-			return a, delayCmd(a, n.Tag)
+			return a, tea.Batch(delayCmd(a, n.Tag), spinTickCmd())
 		case "a", "T":
 			// "a" = test ALL without reaching for shift; "T" kept for
 			// muscle memory of older releases
@@ -1310,14 +1336,19 @@ func (a *App) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.tempActive = true
 				a.status = "testing all nodes (no core — temporary core…)…"
 				a.testTotal, a.testDone, a.testOk, a.testErr = len(a.store.Nodes), 0, 0, ""
-				return a, a.tempTestCmd(nil)
+				for _, n := range a.store.Nodes {
+					a.testing[n.Tag] = true
+				}
+				return a, tea.Batch(a.tempTestCmd(nil), spinTickCmd())
 			}
 			a.status = "testing all nodes…"
 			a.testTotal, a.testDone, a.testOk, a.testErr = len(a.store.Nodes), 0, 0, ""
 			var cmds []tea.Cmd
 			for _, n := range a.store.Nodes {
+				a.testing[n.Tag] = true
 				cmds = append(cmds, delayCmd(a, n.Tag))
 			}
+			cmds = append(cmds, spinTickCmd())
 			return a, tea.Batch(cmds...)
 		case "n":
 			a.beginInput("share link or subscription url: ", a.linkParseCmd)

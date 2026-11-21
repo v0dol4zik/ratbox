@@ -22,10 +22,17 @@ var (
 	// rowBarStyle highlights the active node row: a dark full-width bar so
 	// the connected server is findable at a glance while scanning latencies.
 	rowBarStyle = lipgloss.NewStyle().Background(lipgloss.Color(activeRowBg))
+	// cursorBarStyle highlights the cursor row on every screen: a blue bar
+	// distinct from the active node's gray one, so scrolling a long list
+	// never loses the cursor position.
+	cursorBarStyle = lipgloss.NewStyle().Background(lipgloss.Color(cursorRowBg))
 )
 
 // activeRowBg is the background color of the active node's row bar.
 const activeRowBg = "236"
+
+// cursorRowBg is the background color of the cursor's row bar.
+const cursorRowBg = "24"
 
 func padRight(s string, w int) string {
 	if w <= 0 {
