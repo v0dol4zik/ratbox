@@ -179,7 +179,7 @@ func TestFetchSubCarriesMetadata(t *testing.T) {
 }
 
 func TestFetchStopsOnAuthoritativeEmptyResponse(t *testing.T) {
-	// Mirror of the observed a Remnawave-style provider behavior: most identities get a
+	// Mirror of the observed Remnawave-style panel behavior: most identities get a
 	// placeholder, ClashforWindows passes the gate and receives a valid
 	// but empty config. The fetch must stop there with a clear verdict.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

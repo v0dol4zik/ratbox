@@ -114,13 +114,13 @@ From Throne (mainwindow_events.cpp, HTTPRequestHelper.cpp, GroupUpdater.cpp):
 - [x] json-shaped clash configs ("proxies": [...]) parse; sing-box-config
         responses skip outbounds with xray-only transports (xhttp) instead of
         poisoning the whole config; Karing added to the identity list
-- [x] live-verified against an HWID-gating provider: 3 usable vless reality/tcp
+- [x] live-verified against the provider: 3 usable vless reality/tcp
         nodes import end-to-end; the rest of their fleet is xhttp (xray-only,
         unusable with a sing-box core by design)
 
 ## v0.6.16 "Subscription gates and empty-subscription verdicts"
 
-- [x] probed the real failing panel (a Remnawave-style provider, Remnawave-style) with ~23
+- [x] probed the real failing panel (Remnawave-style) with ~23
         client identities: all got the app-not-supported placeholder (as a
         base64 link, an embedded sing-box-json node or a clash yaml node), and
         ClashforWindows passed the gate but received a valid but EMPTY config
